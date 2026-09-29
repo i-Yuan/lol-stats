@@ -6,6 +6,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            services::player_notes::list_player_notes,
+            services::player_notes::save_player_note,
+            services::player_notes::delete_player_note,
             commands::app_version,
             commands::accept_ready_check,
             commands::cancel_stats_load,

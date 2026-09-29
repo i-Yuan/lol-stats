@@ -16,6 +16,8 @@ import { rankIconLarge } from "../rankIcons"
 import { mitigationValue, riotId, teamMitigationValue } from "../utils"
 import MatchHistoryPanel from "./MatchHistoryPanel.vue"
 import StatsPanel from "./StatsPanel.vue"
+import DataStatus from "./DataStatus.vue"
+import PlayerNoteEditor from "./PlayerNoteEditor.vue"
 
 type RecordTab = "recent" | "stats"
 type QueueFilterKey = "ranked" | "normal" | "arena" | "aram"
@@ -105,6 +107,8 @@ const queueOptions: QueueOption[] = [
   },
 ]
 
+const activeStats = computed(() => activeTab.value === "recent" ? props.recentStats : props.fullStats)
+const resolvedServer = computed(() => activeStats.value?.dataStatus?.sgpServerId || props.sgpServerId || "")
 const currentSummoner = computed(
   () => props.recentStats?.summoner || props.fullStats?.summoner,
 )
@@ -461,6 +465,9 @@ function round2(value: number) {
       </div>
     </header>
 
+    <PlayerNoteEditor v-if="currentSummoner" :server="resolvedServer" :puuid="currentSummoner.puuid" :display-name="riotId(currentSummoner)" />
+    <DataStatus v-if="activeStats" :stats="activeStats" />
+
     <section class="rank-strip" v-if="activeTab === 'recent' && (rankedLoading || rankCards.length)">
       <div class="rank-card loading" v-if="rankedLoading && !rankCards.length">
         <span>段位</span>
@@ -480,6 +487,7 @@ function round2(value: number) {
     </section>
 
     <div class="loading-pill" v-if="loading">正在读取数据</div>
+    <p v-if="error" role="alert" class="record-error">本次读取失败：{{ error }}。如仍显示战绩，它来自上次读取；可点击刷新重试。</p>
 
     <MatchHistoryPanel
       v-if="activeTab === 'recent'"
@@ -601,6 +609,7 @@ function round2(value: number) {
   flex-direction: column;
   gap: 18px;
 }
+.record-error { color: #805718; background: #fff8eb; padding: 12px; border-radius: 8px; overflow-wrap: anywhere; }
 
 .record-topbar {
   display: flex;

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
@@ -14,6 +14,10 @@ use super::models::{
 const USER_AGENT: &str = "LeagueOfLegendsClient/14.13.596.7996 (rcp-be-lol-match-history)";
 const MAX_RETRIES: usize = 3;
 
+#[cfg(test)]
+#[path = "sgp_tests.rs"]
+mod tests;
+
 /// 国服 SGP（Service Gateway Proxy）深战绩客户端。
 ///
 /// LCU 的 `/lol-match-history/v1/products/lol/{puuid}/matches` 在部分国服客户端上会忽略
@@ -21,6 +25,7 @@ const MAX_RETRIES: usize = 3;
 /// SUMMARY 接口，并把返回值映射成项目内部已有的 `Game` 结构。
 pub struct SgpClient {
     http: Client,
+    lcu: LcuClient,
     base_url: String,
     access_token: String,
     league_session_token: String,
@@ -49,6 +54,7 @@ impl SgpClient {
 
         Ok(Self {
             http,
+            lcu: lcu.clone(),
             base_url: base_url.to_string(),
             access_token,
             league_session_token,
@@ -56,20 +62,24 @@ impl SgpClient {
         })
     }
 
+    async fn send(&self, request: RequestBuilder, league: bool) -> AppResult<Response> {
+        let token = if league {
+            &self.league_session_token
+        } else {
+            &self.access_token
+        };
+        send_with_refresh(request, token, || self.lcu.refresh_sgp_token(token, league)).await
+    }
+
     pub async fn ranked_stats(&self, puuid: &str) -> AppResult<RankedStatsResponse> {
-        let response = self
+        let request = self
             .http
             .get(format!(
                 "{}/leagues-ledge/v2/rankedStats/puuid/{}",
                 self.base_url, puuid
             ))
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.league_session_token),
-            )
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?;
+            .header("User-Agent", USER_AGENT);
+        let response = self.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Err(AppError::PlayerNotFound(puuid.to_string()));
@@ -98,20 +108,15 @@ impl SgpClient {
             .unwrap_or(&self.sgp_server_id)
             .to_ascii_lowercase();
 
-        let response = self
+        let request = self
             .http
             .post(format!(
                 "{}/summoner-ledge/v1/regions/{}/summoners/puuids",
                 self.base_url, sub_id
             ))
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.league_session_token),
-            )
             .header("User-Agent", USER_AGENT)
-            .json(puuids)
-            .send()
-            .await?;
+            .json(puuids);
+        let response = self.send(request, true).await?;
 
         if !response.status().is_success() {
             return Err(AppError::SgpUnavailable(format!(
@@ -134,29 +139,27 @@ impl SgpClient {
         let mut last_error = None;
 
         for attempt in 0..=MAX_RETRIES {
-            let response = self
+            let request = self
                 .http
                 .get(format!(
                     "{}/match-history-query/v1/products/lol/player/{}/SUMMARY",
                     self.base_url, puuid
                 ))
-                .header("Authorization", format!("Bearer {}", self.access_token))
                 .header("User-Agent", USER_AGENT)
                 .query(&[
                     ("startIndex", start_index.to_string()),
                     ("count", count.to_string()),
-                ])
-                .send()
-                .await;
+                ]);
+            let response = self.send(request, false).await;
 
             let response = match response {
                 Ok(response) => response,
-                Err(error) if attempt < MAX_RETRIES => {
+                Err(error @ AppError::Http(_)) if attempt < MAX_RETRIES => {
                     last_error = Some(error);
                     wait_before_retry(attempt).await;
                     continue;
                 }
-                Err(error) => return Err(AppError::Http(error)),
+                Err(error) => return Err(error),
             };
 
             if should_retry_status(response.status()) && attempt < MAX_RETRIES {
@@ -194,16 +197,14 @@ impl SgpClient {
             .unwrap_or(&self.sgp_server_id)
             .to_ascii_uppercase();
 
-        let response = self
+        let request = self
             .http
             .get(format!(
                 "{}/match-history-query/v1/products/lol/{}_{}/SUMMARY",
                 self.base_url, sub_id, game_id
             ))
-            .header("Authorization", format!("Bearer {}", self.access_token))
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?;
+            .header("User-Agent", USER_AGENT);
+        let response = self.send(request, false).await?;
 
         self.parse_game_summary_response(response, game_id).await
     }
@@ -226,11 +227,15 @@ impl SgpClient {
 
         let history = parse_sgp_json::<SgpMatchHistoryResponse>(response, "SGP 深战绩").await?;
 
-        Ok(history
+        history
             .games
             .into_iter()
-            .filter_map(|game| game.json.map(sgp_game_json_to_lcu_game))
-            .collect())
+            .map(|game| {
+                game.json.map(sgp_game_json_to_lcu_game).ok_or_else(|| {
+                    AppError::SgpUnavailable("战绩记录缺少 json 数据，无法确认样本完整性".into())
+                })
+            })
+            .collect()
     }
 
     async fn parse_game_summary_response(
@@ -261,6 +266,37 @@ impl SgpClient {
     }
 }
 
+// One authorization retry per request, including POST read queries.
+async fn send_with_refresh<F, Fut>(
+    request: RequestBuilder,
+    token: &str,
+    refresh: F,
+) -> AppResult<Response>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = AppResult<String>>,
+{
+    let retry = request
+        .try_clone()
+        .ok_or_else(|| AppError::SgpUnavailable("请求无法重试".into()))?;
+    let mut response = request.bearer_auth(token).send().await?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        let token = refresh().await.map_err(|_| {
+            AppError::SgpUnavailable("登录认证已失效，请重新登录客户端后重试".into())
+        })?;
+        response = retry.bearer_auth(token).send().await?;
+    }
+    match response.status() {
+        StatusCode::UNAUTHORIZED => Err(AppError::SgpUnavailable(
+            "登录认证已失效，请重新登录客户端后重试".into(),
+        )),
+        StatusCode::FORBIDDEN => Err(AppError::SgpUnavailable(
+            "服务端拒绝访问，无法据此确认是否为隐私限制".into(),
+        )),
+        _ => Ok(response),
+    }
+}
+
 pub fn default_sgp_server_id(auth: &ClientAuth) -> String {
     if auth.region.eq_ignore_ascii_case("TENCENT") {
         format!("TENCENT_{}", auth.rso_platform_id.to_ascii_uppercase())
@@ -282,7 +318,6 @@ pub fn normalize_sgp_server_id(sgp_server_id: &str) -> String {
 
 #[derive(Debug, Default, Deserialize)]
 struct SgpMatchHistoryResponse {
-    #[serde(default)]
     games: Vec<SgpGameEnvelope>,
 }
 

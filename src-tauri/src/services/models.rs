@@ -367,12 +367,32 @@ pub struct ParticipantTimeline {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerStatsResponse {
+    #[serde(default)]
+    pub data_status: StatsDataStatus,
     pub summoner: SummonerInfo,
     pub depth_requested: usize,
     pub depth_loaded: usize,
     pub summary: PlayerSummary,
     pub champion_stats: Vec<ChampionStat>,
     pub recent_games: Vec<RecentGame>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsDataStatus {
+    pub sgp_server_id: String,
+    pub source: String,
+    pub last_success_at: Option<i64>,
+    pub stale: bool,
+    pub partial: bool,
+    pub warning: Option<String>,
+    pub raw_games: usize,
+    pub excluded_pve: usize,
+    pub excluded_short: usize,
+    pub excluded_missing_player: usize,
+    pub oldest_game_at: Option<i64>,
+    pub newest_game_at: Option<i64>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

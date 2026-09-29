@@ -122,7 +122,10 @@ watch(
         <span>正在加载下一组</span>
       </template>
       <span v-else-if="hasMore !== false">继续下滑加载更多</span>
-      <span v-else>已加载到底</span>
+      <span v-else-if="stats.dataStatus?.partial || stats.dataStatus?.stale">加载未完成，可刷新重试</span>
+      <span v-else-if="stats.depthRequested >= 1000 && stats.dataStatus?.hasMore">已达到 1000 局加载上限</span>
+      <span v-else-if="stats.dataStatus?.hasMore">已暂停加载，可刷新重试</span>
+      <span v-else>数据源暂无更多记录</span>
     </div>
   </section>
 </template>

@@ -40,6 +40,8 @@ import LiveGamePanel from "./components/LiveGamePanel.vue"
 import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
 import PlayerRecordTab from "./components/PlayerRecordTab.vue"
 import RecordView from "./components/RecordView.vue"
+import SavedPlayers from "./components/SavedPlayers.vue"
+import PlayerNoteEditor from "./components/PlayerNoteEditor.vue"
 import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
@@ -242,6 +244,14 @@ const activeSearchQuery = ref("")
 const selectedSearchServerId = ref(DEFAULT_SEARCH_SERVER_ID)
 const activeSearchServerId = ref(DEFAULT_SEARCH_SERVER_ID)
 const searchHistory = ref<SearchHistoryItem[]>(loadSearchHistory())
+const searchEpoch = ref(0)
+function resetSearchRequests() {
+  searchEpoch.value++
+  searchRecentLoading.value = false
+  searchStatsLoading.value = false
+  searchCandidateRequestKey = ""
+  searchCandidateLoading.value = false
+}
 const searchRecentStats = ref<PlayerStatsResponse | null>(null)
 const searchFullStats = ref<PlayerStatsResponse | null>(null)
 const searchRankedStats = ref<RankedStatsResponse | null>(null)
@@ -1307,7 +1317,7 @@ async function ensureClientReady() {
   }
 }
 
-async function loadCurrentRecent(forceRefresh = false, previousLoaded?: number) {
+async function loadCurrentRecent(forceRefresh = false) {
   if (currentRecentLoading.value) return false
   currentRecentLoading.value = true
   currentError.value = ""
@@ -1317,14 +1327,11 @@ async function loadCurrentRecent(forceRefresh = false, previousLoaded?: number) 
     void loadCurrentRanked()
     const stats = await loadSelfStats(currentRecentDepth.value, forceRefresh)
     currentRecentStats.value = stats
-    if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
-      currentRecentHasMore.value = false
-    } else if (stats.depthLoaded > previousLoaded! || forceRefresh) {
-      currentRecentHasMore.value = currentRecentDepth.value < MAX_RECENT_DEPTH
-    }
+    currentRecentHasMore.value = Boolean(stats.dataStatus?.hasMore) && currentRecentDepth.value < MAX_RECENT_DEPTH
     return true
   } catch (error) {
     currentError.value = errorMessage(error)
+    currentRecentHasMore.value = false
     notifyError("当前战绩读取失败", error)
     return false
   } finally {
@@ -1336,7 +1343,6 @@ async function loadCurrentRecentMore() {
   if (currentRecentLoading.value || !currentRecentHasMore.value) return
 
   const previousDepth = currentRecentDepth.value
-  const previousLoaded = currentRecentStats.value?.depthLoaded ?? 0
   currentRecentDepth.value = Math.min(MAX_RECENT_DEPTH, currentRecentDepth.value + RECENT_PAGE_SIZE)
 
   if (currentRecentDepth.value === previousDepth) {
@@ -1344,7 +1350,7 @@ async function loadCurrentRecentMore() {
     return
   }
 
-  const loaded = await loadCurrentRecent(false, previousLoaded)
+  const loaded = await loadCurrentRecent(false)
   if (!loaded) {
     currentRecentDepth.value = previousDepth
   }
@@ -1426,6 +1432,7 @@ function openSearchOverview(query: string, sgpServerId: string, historyLabel = q
   if (!text) return
   const normalizedServerId = normalizeSearchServerId(sgpServerId)
 
+  resetSearchRequests()
   navigateToPage("search")
   activeSearchQuery.value = text
   activeSearchServerId.value = normalizedServerId
@@ -1441,6 +1448,11 @@ function openSearchOverview(query: string, sgpServerId: string, historyLabel = q
   searchError.value = ""
   searchCandidateError.value = ""
   saveSearchHistory(historyLabel.trim() || text, normalizedServerId)
+  // Also load explicitly: reopening the same saved player may reuse a view.
+  const epoch = searchEpoch.value
+  void nextTick(() => {
+    if (epoch === searchEpoch.value && !searchRecentStats.value) void loadSearchRecent()
+  })
 }
 
 async function runSearch(query = searchInput.value, sgpServerId = selectedSearchServerId.value) {
@@ -1457,6 +1469,7 @@ async function runSearch(query = searchInput.value, sgpServerId = selectedSearch
     return
   }
 
+  resetSearchRequests()
   navigateToPage("search")
   activeSearchQuery.value = ""
   activeSearchServerId.value = normalizedServerId
@@ -1506,10 +1519,11 @@ async function runSearch(query = searchInput.value, sgpServerId = selectedSearch
 function openSearchCandidate(candidate: SummonerSearchCandidate) {
   const label = candidateRiotId(candidate)
   searchInput.value = label
-  openSearchOverview(label, candidate.sgpServerId, label)
+  openSearchOverview(candidate.puuid, candidate.sgpServerId, label)
 }
 
 function returnToSearchHome() {
+  resetSearchRequests()
   activeSearchQuery.value = ""
   searchRecentStats.value = null
   searchFullStats.value = null
@@ -1528,7 +1542,7 @@ async function loadSearchRanked(puuid: string, forceRefresh = false) {
   if (searchRankedStats.value && !forceRefresh) return
 
   if (forceRefresh) searchRankedStats.value = null
-  const requestKey = `${activeSearchServerId.value}:${activeSearchQuery.value}:${normalizedPuuid}`
+  const requestKey = `${searchEpoch.value}:${activeSearchServerId.value}:${activeSearchQuery.value}:${normalizedPuuid}`
   searchRankedRequestKey = requestKey
   searchRankedLoading.value = true
 
@@ -1548,40 +1562,43 @@ async function loadSearchRanked(puuid: string, forceRefresh = false) {
   }
 }
 
-async function loadSearchRecent(forceRefresh = false, previousLoaded?: number) {
+async function loadSearchRecent(forceRefresh = false) {
   if (!activeSearchQuery.value || searchRecentLoading.value) return false
+  const epoch = searchEpoch.value
+  const query = activeSearchQuery.value
+  const server = activeSearchServerId.value
+  const depth = searchRecentDepth.value
   searchRecentLoading.value = true
   searchError.value = ""
   try {
     await ensureClientReady()
     const stats = await searchPlayer(
-      activeSearchQuery.value,
-      searchRecentDepth.value,
-      activeSearchServerId.value,
+      query,
+      depth,
+      server,
       forceRefresh,
     )
+    if (epoch !== searchEpoch.value) return false
     searchRecentStats.value = stats
     void loadSearchRanked(stats.summoner.puuid, forceRefresh)
-    if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
-      searchRecentHasMore.value = false
-    } else if (stats.depthLoaded > previousLoaded! || forceRefresh) {
-      searchRecentHasMore.value = searchRecentDepth.value < MAX_RECENT_DEPTH
-    }
+    searchRecentHasMore.value = Boolean(stats.dataStatus?.hasMore) && searchRecentDepth.value < MAX_RECENT_DEPTH
     return true
   } catch (error) {
+    if (epoch !== searchEpoch.value) return false
     searchError.value = errorMessage(error)
+    searchRecentHasMore.value = false
     notifyError("查询战绩读取失败", error)
     return false
   } finally {
-    searchRecentLoading.value = false
+    if (epoch === searchEpoch.value) searchRecentLoading.value = false
   }
 }
 
 async function loadSearchRecentMore() {
   if (!activeSearchQuery.value || searchRecentLoading.value || !searchRecentHasMore.value) return
 
+  const epoch = searchEpoch.value
   const previousDepth = searchRecentDepth.value
-  const previousLoaded = searchRecentStats.value?.depthLoaded ?? 0
   searchRecentDepth.value = Math.min(MAX_RECENT_DEPTH, searchRecentDepth.value + RECENT_PAGE_SIZE)
 
   if (searchRecentDepth.value === previousDepth) {
@@ -1589,8 +1606,8 @@ async function loadSearchRecentMore() {
     return
   }
 
-  const loaded = await loadSearchRecent(false, previousLoaded)
-  if (!loaded) {
+  const loaded = await loadSearchRecent(false)
+  if (!loaded && epoch === searchEpoch.value) {
     searchRecentDepth.value = previousDepth
   }
 }
@@ -1598,6 +1615,10 @@ async function loadSearchRecentMore() {
 async function loadSearchStats(forceRefresh = false) {
   if (searchFullStats.value && !forceRefresh) return
   if (!activeSearchQuery.value || searchStatsLoading.value) return
+  const epoch = searchEpoch.value
+  const query = activeSearchQuery.value
+  const server = activeSearchServerId.value
+  const depth = searchStatsDepth.value
   const requestId = createRequestId("search-stats")
   const startedAt = Date.now()
   searchStatsLoading.value = true
@@ -1606,25 +1627,25 @@ async function loadSearchStats(forceRefresh = false) {
   try {
     await ensureClientReady()
     const stats = await searchPlayerWithProgress(
-      activeSearchQuery.value,
-      searchStatsDepth.value,
+      query,
+      depth,
       requestId,
-      activeSearchServerId.value,
+      server,
       forceRefresh,
     )
-    if (!progressOverlay.value.cancelled) {
+    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) {
       searchFullStats.value = stats
       void loadSearchRanked(stats.summoner.puuid, forceRefresh)
     }
   } catch (error) {
-    if (!progressOverlay.value.cancelled) {
+    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) {
       searchError.value = errorMessage(error)
       notifyError("查询统计读取失败", error)
     }
   } finally {
-    if (!progressOverlay.value.cancelled) await keepProgressVisible(startedAt)
+    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) await keepProgressVisible(startedAt)
     endProgress(requestId)
-    searchStatsLoading.value = false
+    if (epoch === searchEpoch.value) searchStatsLoading.value = false
   }
 }
 
@@ -1985,20 +2006,24 @@ onUnmounted(() => {
                 {{ searchCandidateError }}
               </div>
               <div class="candidate-list" v-else>
-                <button
+                <div
                   v-for="candidate in searchCandidateResults"
                   :key="`${candidate.sgpServerId}:${candidate.puuid}`"
-                  class="candidate-item"
-                  @click="openSearchCandidate(candidate)"
+                  class="candidate-entry"
                 >
+                <button class="candidate-item" @click="openSearchCandidate(candidate)">
                   <div>
                     <strong>{{ candidate.gameName }}</strong>
                     <span>#{{ candidate.tagLine }}</span>
                   </div>
                   <em>{{ searchServerLabel(candidate.sgpServerId) }} · Lv.{{ candidate.summonerLevel || "-" }}</em>
                 </button>
+                <PlayerNoteEditor :server="candidate.sgpServerId" :puuid="candidate.puuid" :display-name="candidateRiotId(candidate)" compact />
+                </div>
               </div>
             </section>
+
+            <SavedPlayers @open="openSearchOverview($event.puuid, $event.sgpServerId, $event.displayName)" />
 
             <div class="history" v-if="searchHistory.length">
               <div class="history-title">历史查询记录</div>
@@ -2025,6 +2050,7 @@ onUnmounted(() => {
 
         <RecordView
           v-else
+          :key="activeSearchServerId + ':' + activeSearchQuery + ':' + searchEpoch"
           :recent-stats="searchRecentStats"
           :full-stats="searchFullStats"
           :ranked-stats="searchRankedStats"
@@ -2613,6 +2639,7 @@ button:disabled {
 
 .candidate-item {
   display: flex;
+  width: 100%;
   min-width: 0;
   align-items: center;
   justify-content: space-between;

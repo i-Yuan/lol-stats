@@ -218,12 +218,39 @@ export interface OpenMatchPayload {
 }
 
 export interface PlayerStatsResponse {
+  dataStatus?: StatsDataStatus
   summoner: SummonerInfo
   depthRequested: number
   depthLoaded: number
   summary: PlayerSummary
   championStats: ChampionStat[]
   recentGames: RecentGame[]
+}
+
+export interface StatsDataStatus {
+  sgpServerId: string
+  source: string
+  lastSuccessAt: number | null
+  stale: boolean
+  partial: boolean
+  warning: string | null
+  rawGames: number
+  excludedPve: number
+  excludedShort: number
+  excludedMissingPlayer: number
+  oldestGameAt: number | null
+  newestGameAt: number | null
+  hasMore: boolean
+}
+
+export interface PlayerNote {
+  sgpServerId: string
+  puuid: string
+  displayName: string
+  note: string
+  tag: string
+  favorite: boolean
+  updatedAt: number
 }
 
 export interface LivePlayer {

@@ -1686,11 +1686,10 @@ async fn load_live_player_stats(
     loop {
         match load_player_stats(lcu, Some(auth), None, summoner.clone(), scan_depth).await {
             Ok(stats) => {
-                let loaded_before_filter = stats.depth_loaded;
+                let no_more_games = !stats.data_status.has_more || stats.data_status.stale;
                 let filtered = filter_live_stats(stats, queue_filter, display_depth);
                 let enough_games = filtered.recent_games.len() >= display_depth;
                 let reached_limit = scan_depth >= LIVE_MAX_SCAN_DEPTH;
-                let no_more_games = loaded_before_filter < scan_depth;
 
                 if enough_games || reached_limit || no_more_games {
                     return Ok(filtered);

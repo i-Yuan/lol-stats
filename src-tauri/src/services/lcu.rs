@@ -38,14 +38,26 @@ pub struct LcuClient {
     http: Client,
     base_url: String,
     auth_header: String,
+    refreshed_tokens: std::sync::Arc<tokio::sync::Mutex<HashMap<bool, String>>>,
 }
 
 impl LcuClient {
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: String) -> Self {
+        Self {
+            http: https_client().unwrap(),
+            base_url,
+            auth_header: "Basic test".into(),
+            refreshed_tokens: Default::default(),
+        }
+    }
+
     pub fn new(auth: &ClientAuth) -> AppResult<Self> {
         Ok(Self {
             http: https_client()?,
             base_url: format!("https://127.0.0.1:{}", auth.port),
             auth_header: basic_auth_header(&auth.auth_token),
+            refreshed_tokens: Default::default(),
         })
     }
 
@@ -172,6 +184,25 @@ impl LcuClient {
     pub async fn ping(&self) -> AppResult<()> {
         let _: serde_json::Value = self.get_json("/riotclient/auth-token").await?;
         Ok(())
+    }
+
+    // Shared by clones used for a live game's players. A 401 burst refreshes a
+    // given token once; credentials never leave the local HTTP layer.
+    pub async fn refresh_sgp_token(&self, failed: &str, league: bool) -> AppResult<String> {
+        let mut refreshed = self.refreshed_tokens.lock().await;
+        if let Some(token) = refreshed
+            .get(&league)
+            .filter(|token| token.as_str() != failed)
+        {
+            return Ok(token.clone());
+        }
+        let token = if league {
+            self.league_session_token().await?
+        } else {
+            self.entitlements_access_token().await?
+        };
+        refreshed.insert(league, token.clone());
+        Ok(token)
     }
 
     pub async fn entitlements_access_token(&self) -> AppResult<String> {

@@ -11,9 +11,13 @@ use super::lcu::LcuClient;
 use super::models::{
     ChampionStat, ClientAuth, Game, IdentityPlayer, MatchDetailPlayer, MatchDetailResponse,
     MatchDetailTeam, Participant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry,
-    RecentGame, SummonerInfo,
+    RecentGame, StatsDataStatus, SummonerInfo,
 };
 use super::sgp::{resolve_sgp_server_id, SgpClient};
+
+#[cfg(test)]
+#[path = "stats_tests.rs"]
+mod tests;
 
 /// LCU match-history 单页最多稳定返回 50 条。
 ///
@@ -156,67 +160,140 @@ where
     }
 
     let cache_key = stats_cache_key(auth, sgp_server_id, &summoner, depth);
-    if !persist_cache {
-        let games =
-            load_games_direct(lcu, auth, sgp_server_id, &cache_key, depth, &mut progress).await?;
-        return Ok(analyze_games(summoner, depth, games));
-    }
-
-    if !force_refresh {
-        if let Some(cached) = get_cached_stats(&cache_key) {
-            if !progress(depth, depth) {
+    if persist_cache && !force_refresh {
+        if let Some(mut cached) =
+            get_cached_stats(&cache_key).or_else(|| read_db_cached_stats(&cache_key, false))
+        {
+            if !progress(cached.data_status.raw_games, depth) {
                 return Err(super::error::AppError::Cancelled);
             }
-            return Ok(cached);
-        }
-
-        if let Some(cached) = read_db_cached_stats(&cache_key, false) {
-            store_cached_stats(cache_key.clone(), &cached);
-            if !progress(depth, depth) {
-                return Err(super::error::AppError::Cancelled);
-            }
+            cached.data_status.source = "cache".into();
+            cached.data_status.sgp_server_id = cache_key.sgp_server_id.clone();
             return Ok(cached);
         }
     }
 
-    if let Some(available) = count_db_cached_games(&cache_key) {
-        let loaded = available.min(depth);
-        if loaded > 0 && !progress(loaded, depth) {
-            return Err(super::error::AppError::Cancelled);
-        }
+    let loaded = load_history(
+        lcu,
+        auth,
+        sgp_server_id,
+        &cache_key,
+        depth,
+        persist_cache,
+        &mut progress,
+    )
+    .await;
+    // Cancellation must never be converted into a successful cache response.
+    let completed = loaded
+        .as_ref()
+        .map(|history| history.games.len())
+        .unwrap_or(0);
+    if !progress(completed, depth) || matches!(&loaded, Err(super::error::AppError::Cancelled)) {
+        return Err(super::error::AppError::Cancelled);
     }
-
-    let loaded =
-        load_games_incremental(lcu, auth, sgp_server_id, &cache_key, depth, &mut progress).await;
-
-    let games = match loaded {
-        Ok(games) => games,
+    let previous = if persist_cache {
+        read_db_cached_stats(&cache_key, true)
+    } else {
+        None
+    };
+    let mut response = match loaded {
+        Ok(history) => {
+            let mut response = analyze_games(summoner, depth, history.games);
+            response.data_status.source = history.source;
+            response.data_status.has_more = history.has_more;
+            response.data_status.partial = history.warning.is_some();
+            response.data_status.warning = history.warning;
+            response.data_status.last_success_at = if response.data_status.partial {
+                previous
+                    .as_ref()
+                    .and_then(|r| r.data_status.last_success_at)
+            } else {
+                Some(unix_time_ms())
+            };
+            response.data_status.stale = response.data_status.partial;
+            response
+        }
         Err(error) => {
-            if let Some(games) =
+            let cached_games = if persist_cache {
                 read_db_cached_games(&cache_key, depth).filter(|games| !games.is_empty())
-            {
-                let response = analyze_games(summoner, depth, games);
-                write_db_cached_stats(&cache_key, &response);
-                store_cached_stats(cache_key.clone(), &response);
-                return Ok(response);
-            }
-
-            if let Some(cached) = read_db_cached_stats(&cache_key, true) {
-                store_cached_stats(cache_key.clone(), &cached);
-                if !progress(depth, depth) {
-                    return Err(super::error::AppError::Cancelled);
-                }
-                return Ok(cached);
-            }
-
-            return Err(error);
+            } else {
+                None
+            };
+            let mut response = if let Some(games) = cached_games {
+                let mut response = analyze_games(summoner, depth, games);
+                response.data_status.last_success_at = previous
+                    .as_ref()
+                    .and_then(|r| r.data_status.last_success_at);
+                response
+            } else if let Some(cached) = previous {
+                cached
+            } else {
+                return Err(error);
+            };
+            mark_refresh_failed(&mut response, error.to_string());
+            response
         }
     };
-
-    let response = analyze_games(summoner, depth, games);
-    write_db_cached_stats(&cache_key, &response);
-    store_cached_stats(cache_key, &response);
+    response.data_status.sgp_server_id = cache_key.sgp_server_id.clone();
+    // Do not extend a failed result's TTL or overwrite its last successful sync time.
+    if persist_cache && !response.data_status.stale {
+        write_db_cached_stats(&cache_key, &response);
+        store_cached_stats(cache_key, &response);
+    } else if persist_cache {
+        // Invalidate other depths too: a failed refresh must not leave an apparently
+        // fresh in-memory or SQLite snapshot for the same player.
+        if let Ok(mut cache) = STATS_CACHE.lock() {
+            cache.retain(|key, _| {
+                key.sgp_server_id != cache_key.sgp_server_id || key.puuid != cache_key.puuid
+            });
+        }
+        if let Some(conn) = open_cache_db() {
+            let _ = invalidate_player_snapshots(
+                &conn,
+                &cache_key,
+                response
+                    .data_status
+                    .warning
+                    .as_deref()
+                    .unwrap_or("刷新未完成"),
+            );
+        }
+    }
     Ok(response)
+}
+
+fn mark_refresh_failed(response: &mut PlayerStatsResponse, warning: String) {
+    response.data_status.source = "cache".into();
+    response.data_status.stale = true;
+    response.data_status.partial = true;
+    response.data_status.has_more = false;
+    response.data_status.warning = Some(warning);
+}
+
+fn invalidate_player_snapshots(
+    conn: &Connection,
+    key: &StatsCacheKey,
+    warning: &str,
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare(
+        "SELECT depth, response_json FROM stats_cache WHERE sgp_server_id = ?1 AND puuid = ?2",
+    )?;
+    let entries = statement
+        .query_map(params![key.sgp_server_id, key.puuid], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (depth, json) in entries {
+        if let Ok(mut response) = serde_json::from_str::<PlayerStatsResponse>(&json) {
+            mark_refresh_failed(&mut response, warning.to_string());
+            if let Ok(json) = serde_json::to_string(&response) {
+                // Deliberately preserve stored_at_ms and last_success_at.
+                conn.execute("UPDATE stats_cache SET response_json = ?1 WHERE sgp_server_id = ?2 AND puuid = ?3 AND depth = ?4",
+                    params![json, key.sgp_server_id, key.puuid, depth])?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn stats_cache_key(
@@ -247,7 +324,15 @@ fn get_cached_stats(key: &StatsCacheKey) -> Option<PlayerStatsResponse> {
         return None;
     };
 
-    if entry.stored_at.elapsed() <= STATS_CACHE_TTL {
+    if entry.stored_at.elapsed() <= STATS_CACHE_TTL
+        && entry
+            .response
+            .data_status
+            .last_success_at
+            .and_then(cache_age)
+            .is_some_and(|age| age <= DATABASE_CACHE_TTL)
+        && !entry.response.data_status.stale
+    {
         return Some(entry.response.clone());
     }
 
@@ -299,6 +384,16 @@ fn read_db_cached_stats(key: &StatsCacheKey, allow_stale: bool) -> Option<Player
     }
 
     let response = serde_json::from_str::<PlayerStatsResponse>(&response_json).ok()?;
+    if !allow_stale
+        && (response.data_status.stale
+            || response
+                .data_status
+                .last_success_at
+                .and_then(cache_age)
+                .is_none_or(|age| age > DATABASE_CACHE_TTL))
+    {
+        return None;
+    }
     if response.recent_games.iter().any(|game| {
         game.game_player_count == 0
             || game.team_player_count == 0
@@ -435,7 +530,7 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn cache_db_path() -> Option<PathBuf> {
+pub(crate) fn cache_db_path() -> Option<PathBuf> {
     let mut base = if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let mut path = PathBuf::from(local_app_data);
         path.push("lol-stats");
@@ -463,124 +558,121 @@ fn unix_time_ms() -> i64 {
         .as_millis() as i64
 }
 
-async fn load_games_direct<F>(
+struct LoadedHistory {
+    games: Vec<Game>,
+    has_more: bool,
+    warning: Option<String>,
+    source: String,
+}
+
+async fn load_history<F>(
     lcu: &LcuClient,
     auth: Option<&ClientAuth>,
     sgp_server_id: Option<&str>,
     key: &StatsCacheKey,
     depth: usize,
+    persist: bool,
     progress: &mut F,
-) -> AppResult<Vec<Game>>
+) -> AppResult<LoadedHistory>
 where
     F: FnMut(usize, usize) -> bool + Send,
 {
-    if let Some(auth) = auth {
-        return load_games_direct_from_sgp(lcu, auth, sgp_server_id, key, depth, progress).await;
-    }
-
-    load_games_direct_from_lcu(lcu, key, depth, progress).await
-}
-
-async fn load_games_direct_from_lcu<F>(
-    lcu: &LcuClient,
-    key: &StatsCacheKey,
-    depth: usize,
-    progress: &mut F,
-) -> AppResult<Vec<Game>>
-where
-    F: FnMut(usize, usize) -> bool + Send,
-{
+    let sgp = match auth {
+        Some(auth) => Some(SgpClient::new(lcu, auth, sgp_server_id).await?),
+        None => None,
+    };
     let mut games = Vec::new();
-    let mut seen_game_ids = HashSet::new();
-    let mut start = 0usize;
-
+    let mut seen = HashSet::new();
+    let mut start = 0;
+    let mut has_more = true;
+    let mut warning = None;
+    let mut source = if sgp.is_some() { "sgp" } else { "lcu" }.to_string();
     while games.len() < depth {
-        let remaining = depth - games.len();
-        let page_size = remaining.min(MAX_PAGE_SIZE);
-        let end = start + page_size - 1;
-        let page = lcu.match_history(&key.puuid, start, end).await?;
-
-        if page.games.games.is_empty() {
-            break;
-        }
-
-        let received = page.games.games.len();
-        let before = games.len();
-        games.extend(unique_games(page.games.games, &mut seen_game_ids));
-
-        if !progress(games.len().min(depth), depth) {
+        if !progress(games.len(), depth) {
             return Err(super::error::AppError::Cancelled);
         }
-
-        if games.len() == before || received < page_size {
-            break;
+        let size = (depth - games.len()).min(if sgp.is_some() {
+            SGP_PAGE_SIZE
+        } else {
+            MAX_PAGE_SIZE
+        });
+        let page = match &sgp {
+            Some(sgp) => sgp.match_history(&key.puuid, start, size).await,
+            None => lcu
+                .match_history(&key.puuid, start, start + size - 1)
+                .await
+                .map(|r| r.games.games),
+        };
+        if !progress(games.len(), depth) {
+            return Err(super::error::AppError::Cancelled);
         }
-
-        start += page_size;
-    }
-
-    Ok(games)
-}
-
-async fn load_games_direct_from_sgp<F>(
-    lcu: &LcuClient,
-    auth: &ClientAuth,
-    sgp_server_id: Option<&str>,
-    key: &StatsCacheKey,
-    depth: usize,
-    progress: &mut F,
-) -> AppResult<Vec<Game>>
-where
-    F: FnMut(usize, usize) -> bool + Send,
-{
-    let sgp = SgpClient::new(lcu, auth, sgp_server_id).await?;
-    let mut games = Vec::new();
-    let mut seen_game_ids = HashSet::new();
-    let mut start = 0usize;
-
-    while games.len() < depth {
-        let remaining = depth - games.len();
-        let page_size = remaining.min(SGP_PAGE_SIZE);
-        let page = sgp.match_history(&key.puuid, start, page_size).await?;
-
-        if page.is_empty() {
-            break;
-        }
-
+        let page = match page {
+            Ok(page) => page,
+            Err(error) if !games.is_empty() => {
+                warning = Some(error.to_string());
+                break;
+            }
+            Err(error) => return Err(error),
+        };
         let received = page.len();
-        let before = games.len();
-        games.extend(unique_games(page, &mut seen_game_ids));
-
+        if received == 0 {
+            has_more = false;
+            break;
+        }
+        let page = unique_games(page, &mut seen);
+        if page.is_empty() {
+            warning = Some("接口重复返回同一页，已停止加载；当前样本可能不完整".into());
+            has_more = false;
+            break;
+        }
+        let cached = if persist {
+            Some(store_db_cached_games(key, &page))
+        } else {
+            None
+        };
+        games.extend(page);
         if !progress(games.len().min(depth), depth) {
             return Err(super::error::AppError::Cancelled);
         }
-
-        if games.len() == before || received < page_size {
+        if received < size {
+            has_more = false;
             break;
         }
-
-        start += page_size;
+        if cached.is_some_and(|result| result.hit_cached_player_game && result.available >= depth) {
+            if let Some(cached_games) = read_db_cached_games(key, depth) {
+                games.extend(unique_games(cached_games, &mut seen));
+                if games.len() >= depth {
+                    source = "network-cache".into();
+                    break;
+                }
+            }
+        }
+        start += size;
     }
-
-    Ok(games)
-}
-
-fn count_db_cached_games(key: &StatsCacheKey) -> Option<usize> {
-    let conn = open_cache_db()?;
-    let count: i64 = conn
-        .query_row(
-            r#"
-            SELECT COUNT(*)
-            FROM player_match_index
-            WHERE sgp_server_id = ?1
-              AND puuid = ?2
-            "#,
-            params![&key.sgp_server_id, &key.puuid],
-            |row| row.get(0),
-        )
-        .ok()?;
-
-    count.try_into().ok()
+    if warning.is_some() && persist {
+        if let Some(cached_games) = read_db_cached_games(key, depth) {
+            let extra = unique_games(cached_games, &mut seen);
+            if !extra.is_empty() {
+                source = "network-cache".into();
+            }
+            games.extend(extra);
+        }
+    }
+    games.sort_by(|a, b| {
+        b.game_creation
+            .cmp(&a.game_creation)
+            .then(b.game_id.cmp(&a.game_id))
+    });
+    games.truncate(depth);
+    if warning.is_some() {
+        has_more = false;
+    }
+    Ok(LoadedHistory {
+        games,
+        has_more,
+        warning,
+        source,
+    })
 }
 
 fn read_db_cached_games(key: &StatsCacheKey, depth: usize) -> Option<Vec<Game>> {
@@ -741,148 +833,6 @@ fn count_db_cached_games_with_conn(
     Ok(count.try_into().unwrap_or(0))
 }
 
-async fn load_games_incremental<F>(
-    lcu: &LcuClient,
-    auth: Option<&ClientAuth>,
-    sgp_server_id: Option<&str>,
-    key: &StatsCacheKey,
-    depth: usize,
-    progress: &mut F,
-) -> AppResult<Vec<Game>>
-where
-    F: FnMut(usize, usize) -> bool + Send,
-{
-    if let Some(auth) = auth {
-        load_games_incremental_from_sgp(lcu, auth, sgp_server_id, key, depth, progress).await?;
-    } else {
-        load_games_incremental_from_lcu(lcu, key, depth, progress).await?;
-    }
-
-    let games = read_db_cached_games(key, depth).unwrap_or_default();
-    if games.is_empty() {
-        return Err(super::error::AppError::SgpUnavailable(
-            "未能读取到有效的本地增量战绩".to_string(),
-        ));
-    }
-
-    if !progress(games.len().min(depth), depth) {
-        return Err(super::error::AppError::Cancelled);
-    }
-
-    Ok(games)
-}
-
-async fn load_games_incremental_from_lcu<F>(
-    lcu: &LcuClient,
-    key: &StatsCacheKey,
-    depth: usize,
-    progress: &mut F,
-) -> AppResult<Vec<Game>>
-where
-    F: FnMut(usize, usize) -> bool + Send,
-{
-    let mut seen_game_ids = HashSet::new();
-    let mut start = 0usize;
-    let mut fetched_this_refresh = 0usize;
-
-    loop {
-        let available = count_db_cached_games(key).unwrap_or(0);
-        if start > 0 && fetched_this_refresh >= depth {
-            break;
-        }
-
-        let remaining = depth.saturating_sub(available).max(MAX_PAGE_SIZE);
-        let page_size = remaining.min(MAX_PAGE_SIZE);
-        let end = start + page_size - 1;
-        let page = lcu.match_history(&key.puuid, start, end).await?;
-
-        if page.games.games.is_empty() {
-            break;
-        }
-
-        let received = page.games.games.len();
-        let page_games = unique_games(page.games.games, &mut seen_game_ids);
-        if page_games.is_empty() {
-            break;
-        }
-
-        let result = store_db_cached_games(key, &page_games);
-        fetched_this_refresh += page_games.len();
-        if !progress(result.available.min(depth), depth) {
-            return Err(super::error::AppError::Cancelled);
-        }
-
-        // 国服 LCU 在部分版本会忽略分页参数，后续页重复返回第一页。
-        if result.hit_cached_player_game && result.available >= depth {
-            break;
-        }
-
-        if received < page_size {
-            break;
-        }
-
-        start += page_size;
-    }
-
-    Ok(read_db_cached_games(key, depth).unwrap_or_default())
-}
-
-async fn load_games_incremental_from_sgp<F>(
-    lcu: &LcuClient,
-    auth: &ClientAuth,
-    sgp_server_id: Option<&str>,
-    key: &StatsCacheKey,
-    depth: usize,
-    progress: &mut F,
-) -> AppResult<Vec<Game>>
-where
-    F: FnMut(usize, usize) -> bool + Send,
-{
-    let sgp = SgpClient::new(lcu, auth, sgp_server_id).await?;
-    let mut seen_game_ids = HashSet::new();
-    let mut start = 0usize;
-    let mut fetched_this_refresh = 0usize;
-
-    loop {
-        let available = count_db_cached_games(key).unwrap_or(0);
-        if start > 0 && fetched_this_refresh >= depth {
-            break;
-        }
-
-        let remaining = depth.saturating_sub(available).max(SGP_PAGE_SIZE);
-        let page_size = remaining.min(SGP_PAGE_SIZE);
-        let page = sgp.match_history(&key.puuid, start, page_size).await?;
-
-        if page.is_empty() {
-            break;
-        }
-
-        let received = page.len();
-        let page_games = unique_games(page, &mut seen_game_ids);
-        if page_games.is_empty() {
-            break;
-        }
-
-        let result = store_db_cached_games(key, &page_games);
-        fetched_this_refresh += page_games.len();
-        if !progress(result.available.min(depth), depth) {
-            return Err(super::error::AppError::Cancelled);
-        }
-
-        if result.hit_cached_player_game && result.available >= depth {
-            break;
-        }
-
-        if received < page_size {
-            break;
-        }
-
-        start += page_size;
-    }
-
-    Ok(read_db_cached_games(key, depth).unwrap_or_default())
-}
-
 fn unique_games(games: Vec<Game>, seen_game_ids: &mut HashSet<u64>) -> Vec<Game> {
     games
         .into_iter()
@@ -891,6 +841,12 @@ fn unique_games(games: Vec<Game>, seen_game_ids: &mut HashSet<u64>) -> Vec<Game>
 }
 
 fn analyze_games(summoner: SummonerInfo, depth: usize, games: Vec<Game>) -> PlayerStatsResponse {
+    let mut data_status = StatsDataStatus {
+        raw_games: games.len(),
+        oldest_game_at: games.iter().map(|g| g.game_creation).min(),
+        newest_game_at: games.iter().map(|g| g.game_creation).max(),
+        ..Default::default()
+    };
     let mut recent_games = Vec::new();
     let mut champion_map: HashMap<u32, ChampionAccumulator> = HashMap::new();
 
@@ -901,14 +857,17 @@ fn analyze_games(summoner: SummonerInfo, depth: usize, games: Vec<Game>) -> Play
 
     for game in games {
         if is_pve_queue(game.queue_id) {
+            data_status.excluded_pve += 1;
             continue;
         }
 
         if game.game_duration < MIN_VALID_GAME_DURATION_SECONDS {
+            data_status.excluded_short += 1;
             continue;
         }
 
         let Some(participant) = participant_for_puuid(&game, &summoner.puuid) else {
+            data_status.excluded_missing_player += 1;
             continue;
         };
 
@@ -969,6 +928,7 @@ fn analyze_games(summoner: SummonerInfo, depth: usize, games: Vec<Game>) -> Play
     });
 
     PlayerStatsResponse {
+        data_status,
         summoner,
         depth_requested: depth,
         depth_loaded: total,
@@ -1240,8 +1200,14 @@ fn participant_for_puuid<'a>(game: &'a Game, puuid: &str) -> Option<&'a Particip
             .find(|p| p.participant_id == identity.participant_id);
     }
 
-    // LCU 的玩家个人战绩 summary 通常把目标玩家放在 participants[0]。
-    game.participants.first()
+    // Only a single-player summary without identities can safely use this fallback.
+    // If identities are present but do not contain the queried player, do not
+    // silently attribute another player's performance to them.
+    if game.participant_identities.is_empty() && game.participants.len() == 1 {
+        game.participants.first()
+    } else {
+        None
+    }
 }
 
 fn team_totals_for_participant(game: &Game, participant: &Participant) -> TeamTotals {

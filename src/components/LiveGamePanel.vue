@@ -19,6 +19,8 @@ import type {
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import DataStatus from "./DataStatus.vue"
+import PlayerNoteEditor from "./PlayerNoteEditor.vue"
 import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
@@ -465,6 +467,15 @@ function premadeTitle(marker: LivePremadeMarker) {
                   </span>
                 </div>
               </div>
+
+              <PlayerNoteEditor
+                v-if="!playerView.player.isPlaceholder && playerView.player.summoner && playerView.player.stats?.dataStatus?.sgpServerId"
+                :server="playerView.player.stats.dataStatus.sgpServerId"
+                :puuid="playerView.player.summoner.puuid"
+                :display-name="riotId(playerView.player.summoner)"
+                compact
+              />
+              <DataStatus v-if="playerView.player.stats" :stats="playerView.player.stats" compact />
 
               <div
                 v-if="playerView.player.stats"

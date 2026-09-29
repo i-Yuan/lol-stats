@@ -42,7 +42,7 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function loadRecent(forceRefresh = false, previousLoaded?: number) {
+async function loadRecent(forceRefresh = false) {
   if (recentLoading.value) return false
   recentLoading.value = true
   error.value = ""
@@ -57,15 +57,12 @@ async function loadRecent(forceRefresh = false, previousLoaded?: number) {
     )
     recentStats.value = stats
 
-    if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
-      recentHasMore.value = false
-    } else if (stats.depthLoaded > previousLoaded! || forceRefresh) {
-      recentHasMore.value = recentDepth.value < MAX_RECENT_DEPTH
-    }
+    recentHasMore.value = Boolean(stats.dataStatus?.hasMore) && recentDepth.value < MAX_RECENT_DEPTH
 
     return true
   } catch (loadError) {
     error.value = errorMessage(loadError)
+    recentHasMore.value = false
     return false
   } finally {
     recentLoading.value = false
@@ -76,7 +73,6 @@ async function loadRecentMore() {
   if (recentLoading.value || !recentHasMore.value) return
 
   const previousDepth = recentDepth.value
-  const previousLoaded = recentStats.value?.depthLoaded ?? 0
   recentDepth.value = Math.min(MAX_RECENT_DEPTH, recentDepth.value + RECENT_PAGE_SIZE)
 
   if (recentDepth.value === previousDepth) {
@@ -84,7 +80,7 @@ async function loadRecentMore() {
     return
   }
 
-  const loaded = await loadRecent(false, previousLoaded)
+  const loaded = await loadRecent(false)
   if (!loaded) recentDepth.value = previousDepth
 }
 
