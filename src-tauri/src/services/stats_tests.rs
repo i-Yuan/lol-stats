@@ -2,6 +2,36 @@ use super::*;
 use crate::services::models::ParticipantIdentity;
 use crate::services::test_support::{runtime, serve};
 
+thread_local! {
+    static CACHE_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn cache_path_override() -> Option<PathBuf> {
+    CACHE_PATH.with(|path| path.borrow().clone())
+}
+
+struct TestCache(PathBuf);
+impl TestCache {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "lol-stats-refresh-{}-{}-{id}",
+            std::process::id(),
+            unix_time_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        CACHE_PATH.with(|path| *path.borrow_mut() = Some(dir.join("cache.sqlite3")));
+        Self(dir)
+    }
+}
+impl Drop for TestCache {
+    fn drop(&mut self) {
+        CACHE_PATH.with(|path| *path.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn summoner() -> SummonerInfo {
     SummonerInfo {
         puuid: "test-player".into(),
@@ -217,4 +247,64 @@ fn full_raw_page_can_have_zero_effective_games_and_more_history() {
     assert_eq!(stats.depth_loaded, 0);
     assert!(stats.data_status.has_more);
     server.join().unwrap();
+}
+
+#[test]
+fn forced_refresh_reloads_deep_pages_instead_of_reusing_old_records() {
+    let _cache = TestCache::new();
+    let key = stats_cache_key(None, Some("TENCENT_TEST_REFRESH"), &summoner(), 100);
+    store_db_cached_games(&key, &(1..=100).map(game).collect::<Vec<_>>());
+    let first = (51..=100).rev().map(game).collect::<Vec<_>>();
+    let second = (1..=50)
+        .rev()
+        .map(|id| {
+            let mut updated = game(id);
+            updated.game_duration = 479;
+            updated
+        })
+        .collect::<Vec<_>>();
+    let (url, server) = serve(vec![(200, page(first)), (200, page(second))]);
+    let stats = runtime()
+        .block_on(load_player_stats_with_progress(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_TEST_REFRESH"),
+            summoner(),
+            100,
+            true,
+            true,
+            |_, _| true,
+        ))
+        .unwrap();
+    assert_eq!(stats.data_status.raw_games, 100);
+    assert_eq!(stats.depth_loaded, 50);
+    assert_eq!(stats.data_status.excluded_short, 50);
+    assert_eq!(stats.data_status.source, "lcu");
+    assert!(!stats.data_status.stale);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].contains("begIndex=50"));
+}
+
+#[test]
+fn ordinary_query_can_still_reuse_cached_history() {
+    let _cache = TestCache::new();
+    let key = stats_cache_key(None, Some("TENCENT_TEST_INCREMENTAL"), &summoner(), 100);
+    store_db_cached_games(&key, &(1..=100).map(game).collect::<Vec<_>>());
+    let (url, server) = serve(vec![(200, page((51..=100).rev().map(game).collect()))]);
+    let stats = runtime()
+        .block_on(load_player_stats_with_progress(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_TEST_INCREMENTAL"),
+            summoner(),
+            100,
+            false,
+            true,
+            |_, _| true,
+        ))
+        .unwrap();
+    assert_eq!(stats.depth_loaded, 100);
+    assert_eq!(stats.data_status.source, "network-cache");
+    assert_eq!(server.join().unwrap().len(), 1);
 }

@@ -5,6 +5,7 @@
   "description": "国服英雄联盟战绩统计工具",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",

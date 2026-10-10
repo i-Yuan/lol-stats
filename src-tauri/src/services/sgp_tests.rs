@@ -10,8 +10,8 @@ fn malformed_history_is_not_misreported_as_empty_or_complete() {
             http: Client::new(),
             lcu: LcuClient::for_test(url.clone()),
             base_url: url.clone(),
-            access_token: "test".into(),
-            league_session_token: "test".into(),
+            access_token: RwLock::new("test".into()),
+            league_session_token: RwLock::new("test".into()),
             sgp_server_id: "TENCENT_HN1".into(),
         };
         let result = runtime().block_on(async {
@@ -93,4 +93,42 @@ fn concurrent_requests_share_token_refresh() {
         assert_eq!(b.unwrap(), "new-test");
     });
     assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
+fn refreshed_token_is_reused_and_can_refresh_again() {
+    let (lcu_url, lcu_server) = serve(vec![
+        (200, "{\"accessToken\":\"second-test\"}".into()),
+        (200, "{\"accessToken\":\"third-test\"}".into()),
+    ]);
+    let (url, server) = serve(vec![
+        (401, "{}".into()),
+        (200, "{}".into()),
+        (401, "{}".into()),
+        (200, "{}".into()),
+    ]);
+    let sgp = SgpClient {
+        http: Client::new(),
+        lcu: LcuClient::for_test(lcu_url),
+        base_url: url.clone(),
+        access_token: RwLock::new("first-test".into()),
+        league_session_token: RwLock::new("league-test".into()),
+        sgp_server_id: "TENCENT_HN1".into(),
+    };
+    runtime().block_on(async {
+        for _ in 0..2 {
+            assert_eq!(
+                sgp.send(sgp.http.get(&url), false).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+    });
+    let requests = server.join().unwrap();
+    assert!(requests[2]
+        .to_lowercase()
+        .contains("authorization: bearer second-test"));
+    assert!(requests[3]
+        .to_lowercase()
+        .contains("authorization: bearer third-test"));
+    assert_eq!(lcu_server.join().unwrap().len(), 2);
 }

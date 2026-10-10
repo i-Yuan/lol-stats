@@ -180,6 +180,7 @@ where
         &cache_key,
         depth,
         persist_cache,
+        force_refresh,
         &mut progress,
     )
     .await;
@@ -531,6 +532,10 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub(crate) fn cache_db_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = tests::cache_path_override() {
+        return Some(path);
+    }
     let mut base = if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let mut path = PathBuf::from(local_app_data);
         path.push("lol-stats");
@@ -572,6 +577,7 @@ async fn load_history<F>(
     key: &StatsCacheKey,
     depth: usize,
     persist: bool,
+    force_refresh: bool,
     progress: &mut F,
 ) -> AppResult<LoadedHistory>
 where
@@ -638,7 +644,11 @@ where
             has_more = false;
             break;
         }
-        if cached.is_some_and(|result| result.hit_cached_player_game && result.available >= depth) {
+        // A forced refresh must validate every requested page, not just the newest one.
+        // Keep cache writes and explicitly stale fallback results available on failure.
+        if !force_refresh
+            && cached.is_some_and(|result| result.hit_cached_player_game && result.available >= depth)
+        {
             if let Some(cached_games) = read_db_cached_games(key, depth) {
                 games.extend(unique_games(cached_games, &mut seen));
                 if games.len() >= depth {

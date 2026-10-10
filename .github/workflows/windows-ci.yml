@@ -49,6 +49,9 @@ jobs:
       - name: Typecheck and build frontend
         run: npm run build
 
+      - name: Run frontend request regression tests
+        run: npm test
+
       - name: Run Rust regression tests on Windows
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 

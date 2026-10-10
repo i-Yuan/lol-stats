@@ -3,6 +3,7 @@ use std::time::Duration;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 use super::error::{AppError, AppResult};
 use super::lcu::LcuClient;
@@ -27,8 +28,8 @@ pub struct SgpClient {
     http: Client,
     lcu: LcuClient,
     base_url: String,
-    access_token: String,
-    league_session_token: String,
+    access_token: RwLock<String>,
+    league_session_token: RwLock<String>,
     sgp_server_id: String,
 }
 
@@ -56,19 +57,29 @@ impl SgpClient {
             http,
             lcu: lcu.clone(),
             base_url: base_url.to_string(),
-            access_token,
-            league_session_token,
+            access_token: RwLock::new(access_token),
+            league_session_token: RwLock::new(league_session_token),
             sgp_server_id,
         })
     }
 
     async fn send(&self, request: RequestBuilder, league: bool) -> AppResult<Response> {
-        let token = if league {
+        let token_state = if league {
             &self.league_session_token
         } else {
             &self.access_token
         };
-        send_with_refresh(request, token, || self.lcu.refresh_sgp_token(token, league)).await
+        let token = token_state.read().await.clone();
+        send_with_refresh(request, &token, || async {
+            let refreshed = self.lcu.refresh_sgp_token(&token, league).await?;
+            let mut current = token_state.write().await;
+            // A slower concurrent refresh must not overwrite a newer generation.
+            if *current == token {
+                *current = refreshed.clone();
+            }
+            Ok(refreshed)
+        })
+        .await
     }
 
     pub async fn ranked_stats(&self, puuid: &str) -> AppResult<RankedStatsResponse> {

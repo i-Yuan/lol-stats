@@ -1273,6 +1273,10 @@ function endProgress(requestId: string) {
   }
 }
 
+function isActiveProgress(requestId: string) {
+  return progressOverlay.value.requestId === requestId && !progressOverlay.value.cancelled
+}
+
 async function keepProgressVisible(startedAt: number) {
   const elapsed = Date.now() - startedAt
   if (elapsed >= MIN_PROGRESS_VISIBLE_MS) return
@@ -1379,16 +1383,17 @@ async function loadCurrentStats(forceRefresh = false) {
   beginProgress(requestId, currentStatsDepth.value)
   try {
     await ensureClientReady()
+    if (!isActiveProgress(requestId)) return
     void loadCurrentRanked()
     const stats = await loadSelfStatsWithProgress(currentStatsDepth.value, requestId, forceRefresh)
-    if (!progressOverlay.value.cancelled) currentFullStats.value = stats
+    if (isActiveProgress(requestId)) currentFullStats.value = stats
   } catch (error) {
-    if (!progressOverlay.value.cancelled) {
+    if (isActiveProgress(requestId)) {
       currentError.value = errorMessage(error)
       notifyError("数据统计读取失败", error)
     }
   } finally {
-    if (!progressOverlay.value.cancelled) await keepProgressVisible(startedAt)
+    if (isActiveProgress(requestId)) await keepProgressVisible(startedAt)
     endProgress(requestId)
     currentStatsLoading.value = false
   }
@@ -1626,6 +1631,7 @@ async function loadSearchStats(forceRefresh = false) {
   beginProgress(requestId, searchStatsDepth.value)
   try {
     await ensureClientReady()
+    if (epoch !== searchEpoch.value || !isActiveProgress(requestId)) return
     const stats = await searchPlayerWithProgress(
       query,
       depth,
@@ -1633,17 +1639,17 @@ async function loadSearchStats(forceRefresh = false) {
       server,
       forceRefresh,
     )
-    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) {
+    if (epoch === searchEpoch.value && isActiveProgress(requestId)) {
       searchFullStats.value = stats
       void loadSearchRanked(stats.summoner.puuid, forceRefresh)
     }
   } catch (error) {
-    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) {
+    if (epoch === searchEpoch.value && isActiveProgress(requestId)) {
       searchError.value = errorMessage(error)
       notifyError("查询统计读取失败", error)
     }
   } finally {
-    if (epoch === searchEpoch.value && !progressOverlay.value.cancelled) await keepProgressVisible(startedAt)
+    if (epoch === searchEpoch.value && isActiveProgress(requestId)) await keepProgressVisible(startedAt)
     endProgress(requestId)
     if (epoch === searchEpoch.value) searchStatsLoading.value = false
   }
