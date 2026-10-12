@@ -277,6 +277,7 @@ export interface LivePremadeMarker {
 }
 
 export interface LiveTeam {
+  side?: string | null
   name: string
   players: LivePlayer[]
 }
@@ -287,7 +288,21 @@ export interface EncounterSummary {
   lastSeenAt: number | null
 }
 
+export interface LiveDiagnostics {
+  stage: string
+  rosterMs: number
+  elapsedMs: number
+  queueWaitMs: number
+  reusedPlayers: number
+  completedPlayers: number
+  totalPlayers: number
+  playerJobs: number
+  concurrencyLimit: number
+  slowestPlayerMs: number
+}
+
 export interface LiveGameResponse {
+  diagnostics?: LiveDiagnostics
   sgpServerId?: string
   encounters?: EncounterSummary[]
   observerPuuid?: string

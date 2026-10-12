@@ -734,6 +734,7 @@ pub struct ChampSelectPlayer {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveGameResponse {
+    pub diagnostics: LiveDiagnostics,
     pub sgp_server_id: String,
     pub encounters: Vec<super::encounters::EncounterSummary>,
     pub observer_puuid: Option<String>,
@@ -752,6 +753,7 @@ pub struct LiveGameResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveTeam {
+    pub side: Option<String>,
     pub name: String,
     pub players: Vec<LivePlayer>,
 }
@@ -805,4 +807,19 @@ pub struct SummonerSearchCandidate {
     pub profile_icon_id: u32,
     pub summoner_level: u32,
     pub privacy: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveDiagnostics {
+    pub stage: String,
+    pub roster_ms: u64,
+    pub elapsed_ms: u64,
+    pub queue_wait_ms: u64,
+    pub reused_players: usize,
+    pub completed_players: usize,
+    pub total_players: usize,
+    pub player_jobs: usize,
+    pub concurrency_limit: usize,
+    pub slowest_player_ms: u64,
 }

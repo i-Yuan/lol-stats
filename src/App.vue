@@ -286,7 +286,7 @@ const progressOverlay = ref({
 
 let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
-let liveGameRenderSignature = ""
+let activeLiveRequestId = ""
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
 let autoAcceptInFlight = false
@@ -1664,70 +1664,49 @@ function changeSearchStatsDepth(depth: number) {
   void loadSearchStats()
 }
 
-function buildLiveGameRenderSignature(game: LiveGameResponse) {
-  return JSON.stringify({
-    phase: game.phase,
-    queryStage: game.queryStage,
-    gameId: game.gameId,
-    queueId: game.queueId,
-    queueType: game.queueType,
-    gameMode: game.gameMode,
-    teams: game.teams.map((team) => ({
-      name: team.name,
-      players: team.players.map((player) => ({
-        puuid: player.puuid,
-        championId: player.championId,
-        championPickIntent: player.championPickIntent,
-        position: player.position,
-        selectedRole: player.selectedRole,
-        isPlaceholder: player.isPlaceholder,
-        premadeGroup: player.premade?.groupId || "",
-        gameName: player.summoner?.gameName || player.summoner?.displayName || "",
-        tagLine: player.summoner?.tagLine || "",
-        error: player.error || "",
-        depthLoaded: player.stats?.depthLoaded || 0,
-        recentGameIds: player.stats?.recentGames.map((recent) => recent.gameId) || [],
-      })),
-    })),
-  })
-}
-
-async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean } = {}) {
+async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean; forceRefresh?: boolean } = {}) {
   const silent = Boolean(options.silent)
   const switchPage = options.switchPage ?? !silent
-  if (liveLoading.value || liveRefreshing.value) return
-
-  if (liveGame.value) {
-    liveRefreshing.value = true
-  } else {
-    liveLoading.value = true
-  }
-
+  if (activeLiveRequestId) return
+  const requestId = createRequestId("live")
+  activeLiveRequestId = requestId
+  liveLoading.value = !liveGame.value
+  liveRefreshing.value = Boolean(liveGame.value)
   liveError.value = ""
   if (switchPage) navigateToPage("live")
-
-  try {
-    await ensureClientReady()
-    const nextLiveGame = await loadLiveGame(LIVE_STATS_DEPTH)
-    const nextSignature = buildLiveGameRenderSignature(nextLiveGame) + JSON.stringify([nextLiveGame.sgpServerId, nextLiveGame.encounters, nextLiveGame.encounterWarning])
-    if (!liveGame.value || nextSignature !== liveGameRenderSignature) {
-      liveGame.value = nextLiveGame
-      liveGameRenderSignature = nextSignature
-    }
-  } catch (error) {
-    const message = errorMessage(error)
-    if (liveGame.value) {
-      liveError.value = silent ? "" : message
-      if (!silent) notifyError("实时战绩刷新失败，已保留上一局", error)
-    } else {
-      liveError.value = message
-      if (!silent) notifyError("实时战绩读取失败", error)
-      liveGame.value = null
-      liveGameRenderSignature = ""
-    }
-  } finally {
+  let unlisten: UnlistenFn | undefined
+  const apply = (snapshot: LiveGameResponse) => {
+    if (activeLiveRequestId !== requestId) return
+    liveGame.value = snapshot
     liveLoading.value = false
-    liveRefreshing.value = false
+    liveRefreshing.value = snapshot.diagnostics?.stage !== "complete"
+  }
+  try {
+    unlisten = await listen<{ requestId: string; snapshot: LiveGameResponse }>("live-game-update", event => {
+      if (event.payload.requestId === requestId) apply(event.payload.snapshot)
+    })
+    await ensureClientReady()
+    if (activeLiveRequestId !== requestId) return
+    apply(await loadLiveGame(LIVE_STATS_DEPTH, requestId, Boolean(options.forceRefresh)))
+  } catch (error) {
+    if (activeLiveRequestId !== requestId) return
+    liveError.value = errorMessage(error)
+    if (liveGame.value?.diagnostics) {
+      liveGame.value.diagnostics.stage = "interrupted"
+      for (const team of liveGame.value.teams) {
+        for (const player of team.players) {
+          if (!player.stats && !player.error && !player.isPlaceholder) player.error = "本次同步已中断，可刷新重试"
+        }
+      }
+    }
+    if (!silent) notifyError("实时战绩同步未完成，已保留可用数据", error)
+  } finally {
+    unlisten?.()
+    if (activeLiveRequestId === requestId) {
+      activeLiveRequestId = ""
+      liveLoading.value = false
+      liveRefreshing.value = false
+    }
   }
 }
 
@@ -1742,6 +1721,9 @@ function startLiveAutoRefresh() {
 }
 
 function stopLiveAutoRefresh() {
+  activeLiveRequestId = ""
+  liveLoading.value = false
+  liveRefreshing.value = false
   if (liveRefreshTimer === null) return
   window.clearInterval(liveRefreshTimer)
   liveRefreshTimer = null
@@ -1950,6 +1932,7 @@ onUnmounted(() => {
             <div class="eyebrow">Live Game</div>
             <h2>实时战绩</h2>
           </div>
+          <button @click="refreshLiveGame({ forceRefresh: true })" :disabled="liveLoading || liveRefreshing" title="绕过本局复用和统计缓存重新查询">强制刷新</button>
           <button class="primary-action" @click="refreshLiveGame()" :disabled="liveLoading || liveRefreshing">
             <LoaderCircle v-if="liveLoading || liveRefreshing" class="spin" :size="16" />
             <RefreshCw v-else :size="16" />

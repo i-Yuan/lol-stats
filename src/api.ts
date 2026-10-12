@@ -153,6 +153,6 @@ export function loadMatchDetail(gameId: number, sgpServerId?: string) {
   return invoke<MatchDetailResponse>("load_match_detail", { gameId, sgpServerId })
 }
 
-export function loadLiveGame(depth: number) {
-  return invoke<LiveGameResponse>("load_live_game", { depth })
+export function loadLiveGame(depth: number, requestId: string, forceRefresh = false) {
+  return invoke<LiveGameResponse>("load_live_game", { depth, requestId, forceRefresh })
 }

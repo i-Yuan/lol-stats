@@ -247,8 +247,7 @@ function summarizeTeamViews(players: LivePlayerView[]): LiveTeamSummary {
   }
 }
 
-function teamAverageName(team: LiveTeam, index: number, teams: LiveTeam[]) {
-  if (teams.length === 2) return index === 0 ? "我方" : "敌方"
+function teamAverageName(team: LiveTeam) {
   return team.name
 }
 
@@ -348,6 +347,15 @@ function premadeTitle(marker: LivePremadeMarker) {
 
     <template v-else-if="liveGame.teams.some((team) => team.players.length)">
       <EncounterNotice :game="liveGame" />
+      <div class="live-stale-notice" v-if="liveGame.diagnostics && ['roster','history'].includes(liveGame.diagnostics.stage)">
+        名单已就绪 · 战绩 {{ liveGame.diagnostics.completedPlayers }}/{{ liveGame.diagnostics.totalPlayers }} 人完成。客户端分组先展示，历史同队推断会随样本补全更新。
+      </div>
+      <details v-if="liveGame.diagnostics" class="live-diagnostics">
+        <summary>查询耗时与复用情况</summary>
+        <p>名单阶段 {{ liveGame.diagnostics.rosterMs }} ms · 总耗时 {{ liveGame.diagnostics.elapsedMs }} ms · 等待并发队列 {{ liveGame.diagnostics.queueWaitMs }} ms</p>
+        <p>复用 {{ liveGame.diagnostics.reusedPlayers }} 人 · 本次玩家任务 {{ liveGame.diagnostics.playerJobs }} 个 · 玩家并发上限 {{ liveGame.diagnostics.concurrencyLimit }} · 最慢玩家 {{ liveGame.diagnostics.slowestPlayerMs }} ms</p>
+        <small>玩家任务数不是 HTTP 请求数；每名玩家内部身份和战绩可并行。耗时不含前端连接准备。客户端分组字段尚待国服实测；历史同队仅代表疑似组队。</small>
+      </details>
       <div class="live-stale-notice" v-if="error">
         {{ error }}，已保留上一局实时战绩
       </div>
@@ -355,14 +363,14 @@ function premadeTitle(marker: LivePremadeMarker) {
       <div class="team-averages">
         <section
           class="team-average"
-          v-for="(teamView, index) in liveTeamViews"
+          v-for="teamView in liveTeamViews"
           :key="`average-${teamView.team.name}`"
         >
           <header>
-            <strong>{{ teamAverageName(teamView.team, index, liveGame.teams) }}</strong>
+            <strong>{{ teamAverageName(teamView.team) }}</strong>
             <span>{{ teamView.summary.players }} 人样本</span>
           </header>
-          <div class="average-metrics">
+          <div class="average-metrics" v-if="teamView.summary.players > 0">
             <span>
               <i>平均胜率</i>
               <b>{{ statPercent(teamView.summary.winRate) }}</b>
@@ -388,13 +396,14 @@ function premadeTitle(marker: LivePremadeMarker) {
               <b>{{ statFixed(teamView.summary.averageScore, 0) }}分</b>
             </span>
           </div>
+          <p v-else>尚无有效样本，暂不计算队伍均值。</p>
         </section>
       </div>
 
       <div class="teams">
         <section class="team" v-for="teamView in liveTeamViews" :key="teamView.team.name">
           <div class="team-title">
-            <strong>{{ teamView.team.name }}</strong>
+            <strong>{{ teamView.team.name }} · {{ teamView.team.side || "阵营待确认" }}</strong>
             <span>{{ teamView.players.length }} 人</span>
           </div>
 
@@ -516,8 +525,8 @@ function premadeTitle(marker: LivePremadeMarker) {
               </div>
 
               <div class="player-error" v-if="!playerView.player.stats">
-                <strong>{{ playerView.player.isPlaceholder ? "占位玩家" : "读取失败" }}</strong>
-                <span>{{ playerView.player.error || "暂无战绩数据" }}</span>
+                <strong>{{ playerView.player.isPlaceholder ? "占位玩家" : playerView.player.error ? "读取失败" : "战绩加载中" }}</strong>
+                <span>{{ playerView.player.error || "名单已就绪，正在后台补充战绩" }}</span>
               </div>
 
               <div class="recent-strip" v-if="playerView.games.length">

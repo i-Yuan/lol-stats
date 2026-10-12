@@ -1,4 +1,4 @@
-use futures::stream::{self, StreamExt};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -16,7 +16,7 @@ use crate::services::models::{
     SummonerSearchCandidate,
 };
 use crate::services::stats::{
-    load_match_detail as load_match_detail_service, load_player_stats,
+    load_match_detail as load_match_detail_service,
     load_player_stats_with_progress, normalize_depth,
 };
 use crate::services::tools::{
@@ -26,7 +26,7 @@ use crate::services::tools::{
 const EMPTY_PUUID: &str = "00000000-0000-0000-0000-000000000000";
 const STATS_PROGRESS_EVENT: &str = "stats-load-progress";
 const LIVE_QUERY_CONCURRENCY: usize = 4;
-const LIVE_SCAN_BATCH_DEPTH: usize = 20;
+const LIVE_SCAN_BATCH_DEPTH: usize = 50;
 const LIVE_MAX_SCAN_DEPTH: usize = 150;
 const LIVE_MATCH_LIMIT: usize = 50;
 const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
@@ -842,11 +842,236 @@ pub async fn load_match_detail(
     .map_err(app_error)
 }
 
+static LIVE_REUSE: LazyLock<Mutex<crate::services::live_cache::SessionReuse<LivePlayer>>> =
+    LazyLock::new(|| Mutex::new(Default::default()));
+// A second consumer can read its roster immediately, then reuse the first one's
+// completed work. Only one enrichment batch owns the global four-player budget.
+static LIVE_ENRICHMENT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveUpdate {
+    request_id: String,
+    snapshot: LiveGameResponse,
+}
+
+fn emit_live(app: &AppHandle, request: &str, response: &LiveGameResponse) {
+    let _ = app.emit(
+        "live-game-update",
+        LiveUpdate {
+            request_id: request.into(),
+            snapshot: response.clone(),
+        },
+    );
+}
+fn standard_side(queue: Option<u32>, blue: bool) -> Option<String> {
+    matches!(queue, Some(400 | 420 | 430 | 440 | 450 | 490 | 2400))
+        .then(|| if blue { "蓝色方" } else { "红色方" }.into())
+}
+fn seed_live_players(seeds: Vec<LivePlayerSeed>) -> Vec<LivePlayer> {
+    seeds
+        .into_iter()
+        .map(|s| LivePlayer {
+            summoner: Some(fallback_live_summoner(&s)),
+            puuid: s.puuid,
+            champion_id: s.champion_id,
+            champion_pick_intent: s.champion_pick_intent,
+            position: s.position,
+            selected_role: s.selected_role,
+            summoner_id: s.summoner_id,
+            team_participant_id: s.team_participant_id,
+            is_placeholder: s.is_placeholder,
+            premade: None,
+            stats: None,
+            error: None,
+        })
+        .collect()
+}
+fn reuse_live_players(response: &mut LiveGameResponse, generation: u64) {
+    let Ok(cache) = LIVE_REUSE.lock() else { return };
+    for player in response.teams.iter_mut().flat_map(|t| &mut t.players) {
+        if let Some(cached) = cache.get(
+            generation,
+            &normalize_puuid(&player.puuid),
+            std::time::Instant::now(),
+        ) {
+            player.summoner = cached.summoner;
+            player.stats = cached.stats;
+            player.error = cached.error;
+            if let Some(stats) = &mut player.stats {
+                stats.data_status.source = "cache".into();
+            }
+        }
+    }
+    response.diagnostics.reused_players = response
+        .teams
+        .iter()
+        .flat_map(|t| &t.players)
+        .filter(|p| p.stats.is_some())
+        .count();
+    response.diagnostics.completed_players = response.diagnostics.reused_players;
+}
 #[tauri::command]
-pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
+pub async fn load_live_game(
+    app: AppHandle,
+    depth: usize,
+    request_id: String,
+    force_refresh: Option<bool>,
+) -> Result<LiveGameResponse, String> {
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("实时请求标识无效".into());
+    }
+    let started = std::time::Instant::now();
     let clients = create_clients().map_err(app_error)?;
+    let mut response = build_live_roster(&clients).await?;
     let display_depth = normalize_depth(depth).min(LIVE_MATCH_LIMIT);
-    let Some(session) = clients.lcu.gameflow_session().await.map_err(app_error)? else {
+    let queue_filter = live_queue_filter(
+        response.queue_id,
+        response.queue_type.as_deref(),
+        response.game_mode.as_deref(),
+    );
+    let force = force_refresh.unwrap_or(false);
+    let mut roster = response
+        .teams
+        .iter()
+        .map(|t| {
+            let mut ids = t
+                .players
+                .iter()
+                .map(|p| normalize_puuid(&p.puuid))
+                .collect::<Vec<_>>();
+            ids.sort();
+            (t.name.clone(), ids)
+        })
+        .collect::<Vec<_>>();
+    roster.sort();
+    let scope = serde_json::to_string(&(
+        clients.auth.pid,
+        &response.sgp_server_id,
+        &response.observer_puuid,
+        response.game_id,
+        response.queue_id,
+        display_depth,
+        &roster,
+        // No durable match identity: no cross-request reuse, even with the same names.
+        if response.game_id.is_none() || response.observer_puuid.is_none() {
+            request_id.as_str()
+        } else {
+            ""
+        },
+    ))
+    .map_err(|_| "无法建立实时查询范围")?;
+    let generation = LIVE_REUSE
+        .lock()
+        .map_err(|_| "实时缓存不可用")?
+        .select(scope, force);
+    response.diagnostics.stage = "roster".into();
+    response.diagnostics.roster_ms = started.elapsed().as_millis() as u64;
+    response.diagnostics.total_players = response
+        .teams
+        .iter()
+        .flat_map(|t| &t.players)
+        .filter(|p| !p.is_placeholder)
+        .count();
+    response.diagnostics.concurrency_limit = LIVE_QUERY_CONCURRENCY;
+    reuse_live_players(&mut response, generation);
+    assign_premade_markers(&mut response.teams);
+    emit_live(&app, &request_id, &response);
+    let waiting = std::time::Instant::now();
+    let _budget = LIVE_ENRICHMENT.lock().await;
+    response.diagnostics.queue_wait_ms = waiting.elapsed().as_millis() as u64;
+    if !LIVE_REUSE
+        .lock()
+        .map_err(|_| "实时缓存不可用")?
+        .current(generation)
+    {
+        return Err("实时对局已切换".into());
+    }
+    reuse_live_players(&mut response, generation);
+    let jobs = response
+        .teams
+        .iter()
+        .flat_map(|t| &t.players)
+        .filter(|p| !p.is_placeholder && p.stats.is_none())
+        .map(|p| LivePlayerSeed {
+            puuid: p.puuid.clone(),
+            champion_id: p.champion_id,
+            champion_pick_intent: p.champion_pick_intent,
+            position: p.position.clone(),
+            selected_role: p.selected_role.clone(),
+            summoner_id: p.summoner_id,
+            team_participant_id: p.team_participant_id,
+            is_placeholder: p.is_placeholder,
+            fallback_name: p
+                .summoner
+                .as_ref()
+                .map(|s| s.display_name.clone())
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    response.diagnostics.player_jobs = jobs.len();
+    let mut pending = crate::services::live_cache::concurrent(
+        jobs.into_iter().map(|seed| {
+            let lcu = clients.lcu.clone();
+            let auth = clients.auth.clone();
+            async move {
+                let at = std::time::Instant::now();
+                let player =
+                    load_live_player(&lcu, &auth, seed, display_depth, queue_filter, force).await;
+                (player, at.elapsed().as_millis() as u64)
+            }
+        }),
+        LIVE_QUERY_CONCURRENCY,
+    );
+    while let Some((loaded, elapsed)) = pending.next().await {
+        if !LIVE_REUSE
+            .lock()
+            .map_err(|_| "实时缓存不可用")?
+            .current(generation)
+        {
+            return Err("实时对局已切换".into());
+        }
+        if loaded
+            .stats
+            .as_ref()
+            .is_some_and(|s| !s.data_status.stale && !s.data_status.partial)
+        {
+            LIVE_REUSE.lock().map_err(|_| "实时缓存不可用")?.put(
+                generation,
+                normalize_puuid(&loaded.puuid),
+                loaded.clone(),
+                std::time::Instant::now(),
+            );
+        }
+        for target in response
+            .teams
+            .iter_mut()
+            .flat_map(|t| &mut t.players)
+            .filter(|p| p.puuid.eq_ignore_ascii_case(&loaded.puuid))
+        {
+            *target = loaded.clone();
+        }
+        response.diagnostics.completed_players += 1;
+        response.diagnostics.slowest_player_ms =
+            response.diagnostics.slowest_player_ms.max(elapsed);
+        response.diagnostics.stage = "history".into();
+        response.diagnostics.elapsed_ms = started.elapsed().as_millis() as u64;
+        assign_premade_markers(&mut response.teams);
+        emit_live(&app, &request_id, &response);
+    }
+    response.diagnostics.stage = "complete".into();
+    response.diagnostics.elapsed_ms = started.elapsed().as_millis() as u64;
+    assign_premade_markers(&mut response.teams);
+    emit_live(&app, &request_id, &response);
+    Ok(response)
+}
+
+async fn build_live_roster(clients: &Clients) -> Result<LiveGameResponse, String> {
+    let (session_result, self_result) = futures::join!(
+        clients.lcu.gameflow_session(),
+        clients.lcu.current_summoner()
+    );
+    let Some(session) = session_result.map_err(app_error)? else {
         return Err(app_error(AppError::LiveGameUnavailable));
     };
 
@@ -856,13 +1081,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
     let game_mode =
         Some(session.game_data.queue.game_mode.clone()).filter(|value| !value.is_empty());
     let game_id = Some(session.game_data.game_id).filter(|id| *id != 0);
-    let queue_filter = live_queue_filter(queue_id, queue_type.as_deref(), game_mode.as_deref());
-    let current_puuid = clients
-        .lcu
-        .current_summoner()
-        .await
-        .ok()
-        .map(|summoner| summoner.puuid);
+    let current_puuid = self_result.ok().map(|summoner| summoner.puuid);
 
     if phase == "ChampSelect" {
         let team_participant_map = gameflow_team_participant_map(&session);
@@ -891,59 +1110,47 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
         let mut teams = if queue_type.as_deref() == Some("CHERRY") {
             vec![LiveTeam {
                 name: "全部玩家".to_string(),
-                players: load_live_players(
-                    &clients.lcu,
-                    &clients.auth,
+                side: None,
+                players: seed_live_players(
                     our_players
                         .into_iter()
                         .chain(their_players.into_iter())
                         .collect(),
-                    display_depth,
-                    queue_filter,
-                )
-                .await,
+                ),
             }]
         } else {
             vec![
                 LiveTeam {
                     name: "我方".to_string(),
-                    players: load_live_players(
-                        &clients.lcu,
-                        &clients.auth,
-                        our_players,
-                        display_depth,
-                        queue_filter,
-                    )
-                    .await,
+                    side: None,
+                    players: seed_live_players(our_players),
                 },
                 LiveTeam {
                     name: "敌方".to_string(),
-                    players: load_live_players(
-                        &clients.lcu,
-                        &clients.auth,
-                        their_players,
-                        display_depth,
-                        queue_filter,
-                    )
-                    .await,
+                    side: None,
+                    players: seed_live_players(their_players),
                 },
             ]
         };
         assign_premade_markers(&mut teams);
 
-        return Ok(crate::services::encounters::annotate(LiveGameResponse {
-            sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
-            encounters: Vec::new(),
-            observer_puuid: None,
-            encounter_warning: None,
-            phase,
-            query_stage: "champ-select".to_string(),
-            game_id,
-            queue_id,
-            queue_type,
-            game_mode,
-            teams,
-        }, current_puuid.as_deref()));
+        return Ok(crate::services::encounters::annotate(
+            LiveGameResponse {
+                sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
+                diagnostics: Default::default(),
+                encounters: Vec::new(),
+                observer_puuid: None,
+                encounter_warning: None,
+                phase,
+                query_stage: "champ-select".to_string(),
+                game_id,
+                queue_id,
+                queue_type,
+                game_mode,
+                teams,
+            },
+            current_puuid.as_deref(),
+        ));
     }
 
     if matches!(
@@ -969,17 +1176,13 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
         let mut teams = if queue_type.as_deref() == Some("CHERRY") {
             vec![LiveTeam {
                 name: "全部玩家".to_string(),
-                players: load_live_players(
-                    &clients.lcu,
-                    &clients.auth,
+                side: None,
+                players: seed_live_players(
                     blue_players
                         .into_iter()
                         .chain(red_players.into_iter())
                         .collect(),
-                    display_depth,
-                    queue_filter,
-                )
-                .await,
+                ),
             }]
         } else {
             let current_on_red = current_puuid
@@ -1001,43 +1204,35 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
             vec![
                 LiveTeam {
                     name: our_name.to_string(),
-                    players: load_live_players(
-                        &clients.lcu,
-                        &clients.auth,
-                        our_players,
-                        display_depth,
-                        queue_filter,
-                    )
-                    .await,
+                    side: standard_side(queue_id, !current_on_red),
+                    players: seed_live_players(our_players),
                 },
                 LiveTeam {
                     name: their_name.to_string(),
-                    players: load_live_players(
-                        &clients.lcu,
-                        &clients.auth,
-                        their_players,
-                        display_depth,
-                        queue_filter,
-                    )
-                    .await,
+                    side: standard_side(queue_id, current_on_red),
+                    players: seed_live_players(their_players),
                 },
             ]
         };
         assign_premade_markers(&mut teams);
 
-        return Ok(crate::services::encounters::annotate(LiveGameResponse {
-            sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
-            encounters: Vec::new(),
-            observer_puuid: None,
-            encounter_warning: None,
-            phase,
-            query_stage: "in-game".to_string(),
-            game_id,
-            queue_id,
-            queue_type,
-            game_mode,
-            teams,
-        }, current_puuid.as_deref()));
+        return Ok(crate::services::encounters::annotate(
+            LiveGameResponse {
+                sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
+                diagnostics: Default::default(),
+                encounters: Vec::new(),
+                observer_puuid: None,
+                encounter_warning: None,
+                phase,
+                query_stage: "in-game".to_string(),
+                game_id,
+                queue_id,
+                queue_type,
+                game_mode,
+                teams,
+            },
+            current_puuid.as_deref(),
+        ));
     }
 
     Err(app_error(AppError::LiveGameUnavailable))
@@ -1224,6 +1419,7 @@ struct PremadeCandidate {
 }
 
 fn assign_premade_markers(teams: &mut [LiveTeam]) {
+    for player in teams.iter_mut().flat_map(|t| &mut t.players) { player.premade = None; }
     let mut marked = HashSet::<String>::new();
     let mut group_index = 0usize;
 
@@ -1414,7 +1610,7 @@ fn assign_premade_group(
         .copied()
         .unwrap_or("Z")
         .to_string();
-    let label = format!("{}队 · {}黑", group_id, group.puuids.len());
+    let label = if group.source == "历史同队" { format!("{}组 · 疑似{}黑", group_id, group.puuids.len()) } else { format!("{}组 · 客户端分组{}人", group_id, group.puuids.len()) };
     let member_set = group.puuids.iter().cloned().collect::<HashSet<_>>();
     let marker = LivePremadeMarker {
         group_id,
@@ -1615,39 +1811,26 @@ fn live_round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
-async fn load_live_players(
-    lcu: &LcuClient,
-    auth: &ClientAuth,
-    players: Vec<LivePlayerSeed>,
-    display_depth: usize,
-    queue_filter: LiveQueueFilter,
-) -> Vec<LivePlayer> {
-    let auth = auth.clone();
-
-    stream::iter(players.into_iter().map(|player| {
-        let lcu = lcu.clone();
-        let auth = auth.clone();
-        async move { load_live_player(&lcu, &auth, player, display_depth, queue_filter).await }
-    }))
-    .buffered(LIVE_QUERY_CONCURRENCY)
-    .collect()
-    .await
-}
-
 async fn load_live_player(
     lcu: &LcuClient,
     auth: &ClientAuth,
     seed: LivePlayerSeed,
     display_depth: usize,
     queue_filter: LiveQueueFilter,
+    force_refresh: bool,
 ) -> LivePlayer {
     let fallback_summoner = fallback_live_summoner(&seed);
-    let summoner_result = lcu.summoner_by_puuid(&seed.puuid).await;
+    let (summoner_result, stats_result) = futures::join!(
+        lcu.summoner_by_puuid(&seed.puuid),
+        load_live_player_stats(lcu, auth, fallback_summoner.clone(), display_depth, queue_filter, force_refresh)
+    );
     let identity_error = summoner_result.as_ref().err().map(ToString::to_string);
     let summoner = summoner_result.unwrap_or(fallback_summoner);
 
-    match load_live_player_stats(lcu, auth, summoner.clone(), display_depth, queue_filter).await {
-        Ok(stats) => LivePlayer {
+    match stats_result {
+        Ok(mut stats) => {
+            stats.summoner = summoner.clone();
+            LivePlayer {
             puuid: seed.puuid,
             champion_id: seed.champion_id,
             champion_pick_intent: seed.champion_pick_intent,
@@ -1660,7 +1843,7 @@ async fn load_live_player(
             summoner: Some(summoner),
             stats: Some(stats),
             error: None,
-        },
+        }},
         Err(error) => LivePlayer {
             puuid: seed.puuid,
             champion_id: seed.champion_id,
@@ -1687,12 +1870,13 @@ async fn load_live_player_stats(
     summoner: SummonerInfo,
     display_depth: usize,
     queue_filter: LiveQueueFilter,
+    force_refresh: bool,
 ) -> AppResult<PlayerStatsResponse> {
     let mut scan_depth = LIVE_SCAN_BATCH_DEPTH.min(LIVE_MAX_SCAN_DEPTH);
     let mut last_filtered = None;
 
     loop {
-        match load_player_stats(lcu, Some(auth), None, summoner.clone(), scan_depth).await {
+        match load_player_stats_with_progress(lcu, Some(auth), None, summoner.clone(), scan_depth, force_refresh, true, |_, _| true).await {
             Ok(stats) => {
                 let no_more_games = !stats.data_status.has_more || stats.data_status.stale;
                 let filtered = filter_live_stats(stats, queue_filter, display_depth);
@@ -1707,7 +1891,9 @@ async fn load_live_player_stats(
                 scan_depth = (scan_depth + LIVE_SCAN_BATCH_DEPTH).min(LIVE_MAX_SCAN_DEPTH);
             }
             Err(error) => {
-                if let Some(filtered) = last_filtered {
+                if let Some(mut filtered) = last_filtered {
+                    filtered.data_status.partial = true;
+                    filtered.data_status.warning = Some(format!("继续加载失败：{}", error));
                     return Ok(filtered);
                 }
 
@@ -1730,5 +1916,28 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
         puuid: seed.puuid.clone(),
         summoner_id: seed.summoner_id,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    #[test]
+    fn standard_map_side_labels_do_not_guess_for_special_or_unknown_queues() {
+        assert_eq!(standard_side(Some(420),true).as_deref(),Some("蓝色方"));
+        assert_eq!(standard_side(Some(420),false).as_deref(),Some("红色方"));
+        assert!(standard_side(Some(1700),true).is_none());assert!(standard_side(None,false).is_none());
+    }
+    #[test]
+    fn roster_players_are_immediate_and_have_no_history_or_fake_error() {
+        let seed=LivePlayerSeed{puuid:"player-abcdefghijkl".into(),champion_id:1,champion_pick_intent:0,position:"TOP".into(),selected_role:String::new(),summoner_id:1,team_participant_id:Some(7),fallback_name:"测试".into(),is_placeholder:false};
+        let rows=seed_live_players(vec![seed]);assert_eq!(rows.len(),1);assert!(rows[0].stats.is_none());assert!(rows[0].error.is_none());assert_eq!(rows[0].champion_id,1);
+    }
+    #[test]
+    fn command_future_is_send() {
+        fn assert_send<T:Send>(_value:T){}
+        // Validate the future type without constructing an app or contacting a client.
+        fn check(app:AppHandle){assert_send(load_live_game(app,50,"test".into(),None));}
+        let _=check;
     }
 }
