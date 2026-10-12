@@ -761,6 +761,7 @@ pub struct LiveTeam {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LivePlayer {
+    pub query_timings: Option<LivePlayerTimings>,
     pub puuid: String,
     pub champion_id: u32,
     pub champion_pick_intent: u32,
@@ -822,4 +823,12 @@ pub struct LiveDiagnostics {
     pub player_jobs: usize,
     pub concurrency_limit: usize,
     pub slowest_player_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePlayerTimings {
+    pub identity_ms: u64,
+    pub history_ms: u64,
+    pub reused: bool,
 }

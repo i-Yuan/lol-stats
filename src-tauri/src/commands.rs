@@ -26,7 +26,6 @@ use crate::services::tools::{
 const EMPTY_PUUID: &str = "00000000-0000-0000-0000-000000000000";
 const STATS_PROGRESS_EVENT: &str = "stats-load-progress";
 const LIVE_QUERY_CONCURRENCY: usize = 4;
-const LIVE_SCAN_BATCH_DEPTH: usize = 50;
 const LIVE_MAX_SCAN_DEPTH: usize = 150;
 const LIVE_MATCH_LIMIT: usize = 50;
 const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
@@ -872,6 +871,7 @@ fn seed_live_players(seeds: Vec<LivePlayerSeed>) -> Vec<LivePlayer> {
     seeds
         .into_iter()
         .map(|s| LivePlayer {
+            query_timings: None,
             summoner: Some(fallback_live_summoner(&s)),
             puuid: s.puuid,
             champion_id: s.champion_id,
@@ -895,6 +895,10 @@ fn reuse_live_players(response: &mut LiveGameResponse, generation: u64) {
             &normalize_puuid(&player.puuid),
             std::time::Instant::now(),
         ) {
+            player.query_timings = cached.query_timings.map(|mut timing| {
+                timing.reused = true;
+                timing
+            });
             player.summoner = cached.summoner;
             player.stats = cached.stats;
             player.error = cached.error;
@@ -911,6 +915,7 @@ fn reuse_live_players(response: &mut LiveGameResponse, generation: u64) {
         .count();
     response.diagnostics.completed_players = response.diagnostics.reused_players;
 }
+
 #[tauri::command]
 pub async fn load_live_game(
     app: AppHandle,
@@ -1655,7 +1660,7 @@ fn normalize_query_text(value: &str) -> String {
         .replace('\u{200B}', "")
 }
 
-/// 实时战绩使用当前对局模式筛选历史记录，最多从近 150 场里凑 100 场。
+/// 实时战绩使用当前对局模式筛选历史记录，最多从近 150 场里凑目标样本。
 #[derive(Clone, Copy)]
 enum LiveQueueFilter {
     HexAram,
@@ -1667,17 +1672,20 @@ enum LiveQueueFilter {
 
 impl LiveQueueFilter {
     fn matches(self, game: &RecentGame) -> bool {
+        self.matches_queue(game.queue_id, &game.game_mode)
+    }
+    fn matches_queue(self, queue_id: u32, game_mode: &str) -> bool {
         match self {
-            LiveQueueFilter::HexAram => is_hex_aram_game(game.queue_id, &game.game_mode),
+            LiveQueueFilter::HexAram => is_hex_aram_game(queue_id, game_mode),
             LiveQueueFilter::Aram => {
-                !is_hex_aram_game(game.queue_id, &game.game_mode)
-                    && (game.queue_id == 450 || game.game_mode.eq_ignore_ascii_case("ARAM"))
+                !is_hex_aram_game(queue_id, game_mode)
+                    && (queue_id == 450 || game_mode.eq_ignore_ascii_case("ARAM"))
             }
-            LiveQueueFilter::Ranked => matches!(game.queue_id, 420 | 440),
+            LiveQueueFilter::Ranked => matches!(queue_id, 420 | 440),
             LiveQueueFilter::MatchAndRanked => {
-                matches!(game.queue_id, 400 | 420 | 430 | 440 | 490)
-                    || (game.game_mode.eq_ignore_ascii_case("CLASSIC")
-                        && !matches!(game.queue_id, 450 | 1700 | 1710 | 1711 | 1712 | 2400))
+                matches!(queue_id, 400 | 420 | 430 | 440 | 490)
+                    || (game_mode.eq_ignore_ascii_case("CLASSIC")
+                        && !matches!(queue_id, 450 | 1700 | 1710 | 1711 | 1712 | 2400))
             }
             LiveQueueFilter::Any => true,
         }
@@ -1820,10 +1828,31 @@ async fn load_live_player(
     force_refresh: bool,
 ) -> LivePlayer {
     let fallback_summoner = fallback_live_summoner(&seed);
-    let (summoner_result, stats_result) = futures::join!(
-        lcu.summoner_by_puuid(&seed.puuid),
-        load_live_player_stats(lcu, auth, fallback_summoner.clone(), display_depth, queue_filter, force_refresh)
+    let ((summoner_result, identity_ms), (stats_result, history_ms)) = futures::join!(
+        async {
+            let at = std::time::Instant::now();
+            let result = lcu.summoner_by_puuid(&seed.puuid).await;
+            (result, at.elapsed().as_millis() as u64)
+        },
+        async {
+            let at = std::time::Instant::now();
+            let result = load_live_player_stats(
+                lcu,
+                auth,
+                fallback_summoner.clone(),
+                display_depth,
+                queue_filter,
+                force_refresh,
+            )
+            .await;
+            (result, at.elapsed().as_millis() as u64)
+        }
     );
+    let timing = crate::services::models::LivePlayerTimings {
+        identity_ms,
+        history_ms,
+        reused: false,
+    };
     let identity_error = summoner_result.as_ref().err().map(ToString::to_string);
     let summoner = summoner_result.unwrap_or(fallback_summoner);
 
@@ -1831,20 +1860,23 @@ async fn load_live_player(
         Ok(mut stats) => {
             stats.summoner = summoner.clone();
             LivePlayer {
-            puuid: seed.puuid,
-            champion_id: seed.champion_id,
-            champion_pick_intent: seed.champion_pick_intent,
-            position: seed.position,
-            selected_role: seed.selected_role,
-            summoner_id: seed.summoner_id,
-            team_participant_id: seed.team_participant_id,
-            is_placeholder: seed.is_placeholder,
-            premade: None,
-            summoner: Some(summoner),
-            stats: Some(stats),
-            error: None,
-        }},
+                query_timings: Some(timing),
+                puuid: seed.puuid,
+                champion_id: seed.champion_id,
+                champion_pick_intent: seed.champion_pick_intent,
+                position: seed.position,
+                selected_role: seed.selected_role,
+                summoner_id: seed.summoner_id,
+                team_participant_id: seed.team_participant_id,
+                is_placeholder: seed.is_placeholder,
+                premade: None,
+                summoner: Some(summoner),
+                stats: Some(stats),
+                error: None,
+            }
+        }
         Err(error) => LivePlayer {
+            query_timings: Some(timing),
             puuid: seed.puuid,
             champion_id: seed.champion_id,
             champion_pick_intent: seed.champion_pick_intent,
@@ -1872,35 +1904,18 @@ async fn load_live_player_stats(
     queue_filter: LiveQueueFilter,
     force_refresh: bool,
 ) -> AppResult<PlayerStatsResponse> {
-    let mut scan_depth = LIVE_SCAN_BATCH_DEPTH.min(LIVE_MAX_SCAN_DEPTH);
-    let mut last_filtered = None;
-
-    loop {
-        match load_player_stats_with_progress(lcu, Some(auth), None, summoner.clone(), scan_depth, force_refresh, true, |_, _| true).await {
-            Ok(stats) => {
-                let no_more_games = !stats.data_status.has_more || stats.data_status.stale;
-                let filtered = filter_live_stats(stats, queue_filter, display_depth);
-                let enough_games = filtered.recent_games.len() >= display_depth;
-                let reached_limit = scan_depth >= LIVE_MAX_SCAN_DEPTH;
-
-                if enough_games || reached_limit || no_more_games {
-                    return Ok(filtered);
-                }
-
-                last_filtered = Some(filtered);
-                scan_depth = (scan_depth + LIVE_SCAN_BATCH_DEPTH).min(LIVE_MAX_SCAN_DEPTH);
-            }
-            Err(error) => {
-                if let Some(mut filtered) = last_filtered {
-                    filtered.data_status.partial = true;
-                    filtered.data_status.warning = Some(format!("继续加载失败：{}", error));
-                    return Ok(filtered);
-                }
-
-                return Err(error);
-            }
-        }
-    }
+    let stats = crate::services::stats::load_player_stats_matching(
+        lcu,
+        Some(auth),
+        None,
+        summoner,
+        LIVE_MAX_SCAN_DEPTH,
+        display_depth,
+        force_refresh,
+        move |queue, mode| queue_filter.matches_queue(queue, mode),
+    )
+    .await?;
+    Ok(filter_live_stats(stats, queue_filter, display_depth))
 }
 
 fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
@@ -1922,6 +1937,16 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    #[test]
+    fn hex_aram_history_does_not_mix_with_normal_aram_or_ranked() {
+        let filter = live_queue_filter(Some(2400), None, Some("ARAM"));
+        assert!(filter.matches_queue(2400, "ARAM"));
+        assert!(!filter.matches_queue(450, "ARAM"));
+        assert!(!filter.matches_queue(420, "CLASSIC"));
+        let normal = live_queue_filter(Some(450), None, Some("ARAM"));
+        assert!(normal.matches_queue(450, "ARAM"));
+        assert!(!normal.matches_queue(2400, "ARAM"));
+    }
     #[test]
     fn standard_map_side_labels_do_not_guess_for_special_or_unknown_queues() {
         assert_eq!(standard_side(Some(420),true).as_deref(),Some("蓝色方"));

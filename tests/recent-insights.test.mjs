@@ -6,6 +6,13 @@ const source=readFileSync(new URL('../src/recentInsights.ts',import.meta.url),'u
 const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText
 const {orderedGames,recentTrend,recentShareRows}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'))
 const game=(id,extra={})=>({gameId:id,gameCreation:id*1000,gameDuration:1200,queueId:420,championId:1,win:true,kills:5,deaths:2,assists:5,...extra})
+test('hex aram trend cannot borrow normal aram or ranked samples',()=>{
+ const games=Array.from({length:20},(_,i)=>game(i+1,{queueId:2400}))
+ games.push(...Array.from({length:40},(_,i)=>game(i+21,{queueId:i%2?450:420,win:false})))
+ const t=recentTrend(games,2400)
+ assert.equal(t.current.count,20);assert.equal(t.current.winRate,1)
+ assert.equal(t.previous.count,0);assert.equal(t.comparable,false);assert.equal(t.winRateDelta,null)
+})
 test('trend sorts, deduplicates and keeps queues separate',()=>{
  const games=Array.from({length:40},(_,i)=>game(i+1,{win:i>=20}));games.push(game(40),game(100,{queueId:440}))
  const t=recentTrend(games.reverse(),420)

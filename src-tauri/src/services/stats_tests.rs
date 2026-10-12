@@ -308,3 +308,218 @@ fn ordinary_query_can_still_reuse_cached_history() {
     assert_eq!(stats.data_status.source, "network-cache");
     assert_eq!(server.join().unwrap().len(), 1);
 }
+
+#[test]
+fn matching_scan_advances_once_and_stops_when_target_is_met() {
+    let _cache = TestCache::new();
+    let first = (101..=150)
+        .rev()
+        .map(|id| {
+            let mut g = game(id);
+            g.queue_id = 440;
+            g
+        })
+        .collect();
+    let second = (51..=100).rev().map(game).collect();
+    let (url, server) = serve(vec![(200, page(first)), (200, page(second))]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_INCREMENTAL"),
+            summoner(),
+            150,
+            50,
+            true,
+            |q, _| q == 420,
+        ))
+        .unwrap();
+    assert_eq!(result.data_status.raw_games, 100);
+    assert_eq!(
+        result
+            .recent_games
+            .iter()
+            .filter(|g| g.queue_id == 420)
+            .count(),
+        50
+    );
+    assert!(!result.data_status.partial);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("begIndex=0"));
+    assert!(requests[1].contains("begIndex=50"));
+}
+
+#[test]
+fn matching_early_stop_does_not_poison_full_depth_snapshot() {
+    let _cache = TestCache::new();
+    let player = summoner();
+    let (url, server) = serve(vec![(200, page((101..=150).rev().map(game).collect()))]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_EARLY"),
+            player.clone(),
+            150,
+            50,
+            true,
+            |q, _| q == 420,
+        ))
+        .unwrap();
+    assert_eq!(result.data_status.raw_games, 50);
+    assert!(result.data_status.has_more);
+    let key = stats_cache_key(None, Some("TENCENT_EARLY"), &player, 150);
+    assert!(read_db_cached_stats(&key, false).is_none());
+    assert!(get_cached_stats(&key).is_none());
+    assert_eq!(read_db_cached_games(&key, 150).unwrap().len(), 50);
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
+fn matching_scan_failure_keeps_partial_data_without_new_success_time() {
+    let _cache = TestCache::new();
+    let first = (101..=150)
+        .rev()
+        .map(|id| {
+            let mut g = game(id);
+            g.queue_id = 440;
+            g
+        })
+        .collect();
+    let (url, server) = serve(vec![(200, page(first)), (503, "{}".into())]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_PARTIAL"),
+            summoner(),
+            150,
+            50,
+            true,
+            |q, _| q == 420,
+        ))
+        .unwrap();
+    assert_eq!(result.data_status.raw_games, 50);
+    assert!(result.data_status.partial);
+    assert!(result.data_status.stale);
+    assert!(result.data_status.last_success_at.is_none());
+    assert!(result.data_status.warning.is_some());
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[test]
+fn matching_scan_repeated_page_is_stopped_and_reported() {
+    let _cache = TestCache::new();
+    let first = page(
+        (101..=150)
+            .rev()
+            .map(|id| {
+                let mut g = game(id);
+                g.queue_id = 440;
+                g
+            })
+            .collect(),
+    );
+    let (url, server) = serve(vec![(200, first.clone()), (200, first)]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_REPEAT"),
+            summoner(),
+            150,
+            50,
+            true,
+            |q, _| q == 420,
+        ))
+        .unwrap();
+    assert_eq!(result.data_status.raw_games, 50);
+    assert!(result.data_status.partial);
+    assert!(result.data_status.warning.unwrap().contains("重复"));
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[test]
+fn matching_scan_exclusions_do_not_satisfy_target_or_restart_cursor() {
+    let _cache = TestCache::new();
+    let short = (101..=150)
+        .rev()
+        .map(|id| {
+            let mut g = game(id);
+            g.game_duration = 479;
+            g
+        })
+        .collect();
+    let pve = (51..=100)
+        .rev()
+        .map(|id| {
+            let mut g = game(id);
+            g.queue_id = 830;
+            g
+        })
+        .collect();
+    let (url, server) = serve(vec![
+        (200, page(short)),
+        (200, page(pve)),
+        (200, page((1..=50).rev().map(game).collect())),
+    ]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_EXCLUSIONS"),
+            summoner(),
+            150,
+            50,
+            true,
+            |_, _| true,
+        ))
+        .unwrap();
+    assert_eq!(result.depth_loaded, 50);
+    assert_eq!(result.data_status.excluded_short, 50);
+    assert_eq!(result.data_status.excluded_pve, 50);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    for (i, r) in requests.iter().enumerate() {
+        assert!(r.contains(&format!("begIndex={}", i * 50)));
+    }
+}
+
+#[test]
+fn matching_scan_overlapping_pages_respect_raw_scan_limit() {
+    let _cache = TestCache::new();
+    let wrong_page = |start, end| {
+        page(
+            (start..=end)
+                .rev()
+                .map(|id| {
+                    let mut g = game(id);
+                    g.queue_id = 440;
+                    g
+                })
+                .collect(),
+        )
+    };
+    let (url, server) = serve(vec![
+        (200, wrong_page(101, 150)),
+        (200, wrong_page(81, 130)),
+        (200, wrong_page(61, 110)),
+    ]);
+    let result = runtime()
+        .block_on(load_player_stats_matching(
+            &LcuClient::for_test(url),
+            None,
+            Some("TENCENT_OVERLAP"),
+            summoner(),
+            150,
+            50,
+            true,
+            |q, _| q == 420,
+        ))
+        .unwrap();
+    assert_eq!(result.data_status.raw_games, 90);
+    assert!(result.data_status.partial);
+    assert!(result.data_status.warning.unwrap().contains("重复"));
+    assert_eq!(server.join().unwrap().len(), 3);
+}

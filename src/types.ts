@@ -254,6 +254,7 @@ export interface PlayerNote {
 }
 
 export interface LivePlayer {
+  queryTimings?: { identityMs: number; historyMs: number; reused: boolean } | null
   puuid: string
   championId: number
   championPickIntent: number

@@ -524,6 +524,10 @@ function premadeTitle(marker: LivePremadeMarker) {
                 </div>
               </div>
 
+              <details v-if="playerView.player.queryTimings" class="player-timing">
+                <summary>{{ playerView.player.queryTimings.reused ? '本局复用 · 上次获取耗时' : '本次获取耗时' }}</summary>
+                <small>身份 {{ playerView.player.queryTimings.identityMs }} ms · 战绩 {{ playerView.player.queryTimings.historyMs }} ms（并行，不相加）</small>
+              </details>
               <div class="player-error" v-if="!playerView.player.stats">
                 <strong>{{ playerView.player.isPlaceholder ? "占位玩家" : playerView.player.error ? "读取失败" : "战绩加载中" }}</strong>
                 <span>{{ playerView.player.error || "名单已就绪，正在后台补充战绩" }}</span>

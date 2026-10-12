@@ -148,7 +148,72 @@ pub async fn load_player_stats_with_progress<F>(
     depth: usize,
     force_refresh: bool,
     persist_cache: bool,
+    progress: F,
+) -> AppResult<PlayerStatsResponse>
+where
+    F: FnMut(usize, usize) -> bool + Send,
+{
+    load_player_stats_core(
+        lcu,
+        auth,
+        sgp_server_id,
+        summoner,
+        depth,
+        force_refresh,
+        persist_cache,
+        progress,
+        None,
+    )
+    .await
+}
+
+struct HistoryTarget<'a> {
+    count: usize,
+    queue_matches: &'a (dyn Fn(u32, &str) -> bool + Send + Sync),
+}
+
+/// One sequential scan for a live-mode sample; authentication and page cursors
+/// are retained throughout. An early stop never masquerades as a full-depth cache.
+pub async fn load_player_stats_matching<M>(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    summoner: SummonerInfo,
+    scan_limit: usize,
+    count: usize,
+    force_refresh: bool,
+    queue_matches: M,
+) -> AppResult<PlayerStatsResponse>
+where
+    M: Fn(u32, &str) -> bool + Send + Sync,
+{
+    load_player_stats_core(
+        lcu,
+        auth,
+        sgp_server_id,
+        summoner,
+        scan_limit,
+        force_refresh,
+        true,
+        |_, _| true,
+        Some(HistoryTarget {
+            count: count.max(1),
+            queue_matches: &queue_matches,
+        }),
+    )
+    .await
+}
+
+async fn load_player_stats_core<F>(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    summoner: SummonerInfo,
+    depth: usize,
+    force_refresh: bool,
+    persist_cache: bool,
     mut progress: F,
+    target: Option<HistoryTarget<'_>>,
 ) -> AppResult<PlayerStatsResponse>
 where
     F: FnMut(usize, usize) -> bool + Send,
@@ -181,6 +246,7 @@ where
         depth,
         persist_cache,
         force_refresh,
+        target.as_ref(),
         &mut progress,
     )
     .await;
@@ -238,8 +304,14 @@ where
     response.data_status.sgp_server_id = cache_key.sgp_server_id.clone();
     // Do not extend a failed result's TTL or overwrite its last successful sync time.
     if persist_cache && !response.data_status.stale {
-        write_db_cached_stats(&cache_key, &response);
-        store_cached_stats(cache_key, &response);
+        // A mode-specific early stop is not a complete scan_limit snapshot.
+        if target.is_none()
+            || response.data_status.raw_games >= depth
+            || !response.data_status.has_more
+        {
+            write_db_cached_stats(&cache_key, &response);
+            store_cached_stats(cache_key, &response);
+        }
     } else if persist_cache {
         // Invalidate other depths too: a failed refresh must not leave an apparently
         // fresh in-memory or SQLite snapshot for the same player.
@@ -578,6 +650,7 @@ async fn load_history<F>(
     depth: usize,
     persist: bool,
     force_refresh: bool,
+    target: Option<&HistoryTarget<'_>>,
     progress: &mut F,
 ) -> AppResult<LoadedHistory>
 where
@@ -593,11 +666,16 @@ where
     let mut has_more = true;
     let mut warning = None;
     let mut source = if sgp.is_some() { "sgp" } else { "lcu" }.to_string();
-    while games.len() < depth {
+    while games.len() < depth && (target.is_none() || start < depth) {
         if !progress(games.len(), depth) {
             return Err(super::error::AppError::Cancelled);
         }
-        let size = (depth - games.len()).min(if sgp.is_some() {
+        let remaining = if target.is_some() {
+            (depth - games.len()).min(depth - start)
+        } else {
+            depth - games.len()
+        };
+        let size = remaining.min(if sgp.is_some() {
             SGP_PAGE_SIZE
         } else {
             MAX_PAGE_SIZE
@@ -631,6 +709,9 @@ where
             has_more = false;
             break;
         }
+        if page.len() < received {
+            warning = Some("分页包含重复记录，已去重；当前样本可能不完整".into());
+        }
         let cached = if persist {
             Some(store_db_cached_games(key, &page))
         } else {
@@ -644,10 +725,25 @@ where
             has_more = false;
             break;
         }
+        if target.is_some_and(|target| {
+            games
+                .iter()
+                .filter(|game| {
+                    !is_pve_queue(game.queue_id)
+                        && game.game_duration >= MIN_VALID_GAME_DURATION_SECONDS
+                        && participant_for_puuid(game, &key.puuid).is_some()
+                        && (target.queue_matches)(game.queue_id, &game.game_mode)
+                })
+                .count()
+                >= target.count
+        }) {
+            break;
+        }
         // A forced refresh must validate every requested page, not just the newest one.
         // Keep cache writes and explicitly stale fallback results available on failure.
         if !force_refresh
-            && cached.is_some_and(|result| result.hit_cached_player_game && result.available >= depth)
+            && cached
+                .is_some_and(|result| result.hit_cached_player_game && result.available >= depth)
         {
             if let Some(cached_games) = read_db_cached_games(key, depth) {
                 games.extend(unique_games(cached_games, &mut seen));
