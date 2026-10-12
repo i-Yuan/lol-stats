@@ -703,9 +703,20 @@ pub struct GameflowPlayer {
 #[serde(rename_all = "camelCase")]
 pub struct ChampSelectSession {
     #[serde(default)]
+    pub bench_enabled: Option<bool>,
+    #[serde(default)]
+    pub bench_champions: Option<Vec<BenchChampion>>,
+    #[serde(default)]
     pub my_team: Vec<ChampSelectPlayer>,
     #[serde(default)]
     pub their_team: Vec<ChampSelectPlayer>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchChampion {
+    #[serde(default)]
+    pub champion_id: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -734,6 +745,7 @@ pub struct ChampSelectPlayer {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveGameResponse {
+    pub bench_champion_ids: Option<Vec<u32>>,
     pub diagnostics: LiveDiagnostics,
     pub sgp_server_id: String,
     pub encounters: Vec<super::encounters::EncounterSummary>,

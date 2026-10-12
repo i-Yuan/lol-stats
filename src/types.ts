@@ -303,6 +303,7 @@ export interface LiveDiagnostics {
 }
 
 export interface LiveGameResponse {
+  benchChampionIds?: number[] | null
   diagnostics?: LiveDiagnostics
   sgpServerId?: string
   encounters?: EncounterSummary[]
@@ -356,4 +357,11 @@ export interface ShareSettings {
   championAnalysisLimit: number
   championGamesAnalysisLimit: number
   mobileShareLayout: boolean
+}
+
+export interface ChampionChoiceSnapshot {
+  sgpServerId: string
+  observerPuuid: string
+  championId: number
+  benchChampionIds: number[] | null
 }

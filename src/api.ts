@@ -156,3 +156,7 @@ export function loadMatchDetail(gameId: number, sgpServerId?: string) {
 export function loadLiveGame(depth: number, requestId: string, forceRefresh = false) {
   return invoke<LiveGameResponse>("load_live_game", { depth, requestId, forceRefresh })
 }
+
+export function loadChampionChoices() {
+  return invoke<import('./types').ChampionChoiceSnapshot | null>("load_champion_choices")
+}

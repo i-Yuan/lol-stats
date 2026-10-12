@@ -18,6 +18,7 @@ import type {
   LiveTeam,
   RecentGame,
 } from "../types"
+import ChampionChoicePanel from "./ChampionChoicePanel.vue"
 import EncounterNotice from "./EncounterNotice.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 import DataStatus from "./DataStatus.vue"
@@ -346,6 +347,7 @@ function premadeTitle(marker: LivePremadeMarker) {
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
     <template v-else-if="liveGame.teams.some((team) => team.players.length)">
+      <ChampionChoicePanel :game="liveGame" :champions="champions" />
       <EncounterNotice :game="liveGame" />
       <div class="live-stale-notice" v-if="liveGame.diagnostics && ['roster','history'].includes(liveGame.diagnostics.stage)">
         名单已就绪 · 战绩 {{ liveGame.diagnostics.completedPlayers }}/{{ liveGame.diagnostics.totalPlayers }} 人完成。客户端分组先展示，历史同队推断会随样本补全更新。

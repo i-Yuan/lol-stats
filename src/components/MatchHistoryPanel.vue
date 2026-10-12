@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
 import { LoaderCircle } from "lucide-vue-next"
 import type {
   ChampionSummaryItem,
@@ -27,6 +27,10 @@ const emit = defineEmits<{
   openMatch: [payload: OpenMatchPayload]
 }>()
 
+const augmentFilter = ref(0)
+const augmentOptions = computed(() => [...new Set((props.stats?.recentGames || []).filter(g=>g.queueId===2400).flatMap(g=>g.augmentIds))].filter(id=>id>0).map(id=>({id,name:props.gameAssets.augments.find(a=>a.id===id)?.name || `强化 ${id}`})))
+const filteredGames = computed(() => (props.stats?.recentGames || []).filter(g=>!augmentFilter.value || (g.queueId===2400 && g.augmentIds.includes(augmentFilter.value))))
+watch([()=>props.stats?.summoner.puuid,()=>props.sgpServerId],()=>{augmentFilter.value=0})
 const loadMoreSentinel = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
 
@@ -35,7 +39,7 @@ function canLoadMore() {
 }
 
 function requestMoreIfVisible() {
-  if (!canLoadMore()) return
+  if (augmentFilter.value || !canLoadMore()) return
 
   const sentinel = loadMoreSentinel.value
   if (!sentinel) return
@@ -48,7 +52,7 @@ function requestMoreIfVisible() {
 }
 
 function handleIntersection(entries: IntersectionObserverEntry[]) {
-  if (!canLoadMore()) return
+  if (augmentFilter.value || !canLoadMore()) return
 
   if (entries.some((entry) => entry.isIntersecting)) {
     emit("loadMore")
@@ -108,8 +112,12 @@ watch(
 
     <RecentGamesShare :stats="stats" :champions="champions" />
 
+    <label v-if="augmentOptions.length">海克斯强化筛选
+      <select v-model.number="augmentFilter"><option :value="0">全部已加载对局</option><option v-for="a in augmentOptions" :key="a.id" :value="a.id">{{a.name}}</option></select>
+      <small v-if="augmentFilter"> 匹配 {{filteredGames.length}} 局，仅筛选已加载海克斯对局；上方汇总仍为全部样本。</small>
+    </label>
     <GameRecordList
-      :games="stats.recentGames"
+      :games="filteredGames"
       :champions="champions"
       :game-assets="gameAssets"
       :sgp-server-id="sgpServerId"
@@ -124,6 +132,7 @@ watch(
         <LoaderCircle class="spin" :size="16" />
         <span>正在加载下一组</span>
       </template>
+      <button v-else-if="augmentFilter && hasMore !== false" @click="emit('loadMore')">手动加载更多样本</button>
       <span v-else-if="hasMore !== false">继续下滑加载更多</span>
       <span v-else-if="stats.dataStatus?.partial || stats.dataStatus?.stale">加载未完成，可刷新重试</span>
       <span v-else-if="stats.depthRequested >= 1000 && stats.dataStatus?.hasMore">已达到 1000 局加载上限</span>

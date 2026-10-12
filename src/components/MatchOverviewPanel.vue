@@ -16,6 +16,8 @@ import type {
   RecentGame,
 } from "../types"
 import { fixed, formatDate, mitigationValue, teamMitigationValue } from "../utils"
+import BuildShare from "./BuildShare.vue"
+import { plainDescription } from "../hexInsights"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 
@@ -130,10 +132,6 @@ function teamSummary(team: MatchDetailResponse["teams"][number]) {
 
 function augmentName(augmentId: number) {
   return augmentMap.value[augmentId]?.name || perkMap.value[augmentId]?.name || `强化 ${augmentId}`
-}
-
-function shortAugmentName(augmentId: number) {
-  return Array.from(augmentName(augmentId)).slice(0, 5).join("")
 }
 
 function augmentRarityClass(augmentId: number) {
@@ -344,12 +342,14 @@ async function copyImage() {
   const target = captureRef.value
   if (!target || !props.matchDetail || copying.value) return
 
+  const capturedId = props.matchDetail.gameId
   copying.value = true
   try {
     await copyElementAsPng(target, {
       backgroundColor: "#f6faf9",
       pixelRatio: 2,
-      filter: (node) => !(node instanceof HTMLElement && node.classList.contains("overview-actions")),
+      shouldWrite: () => props.matchDetail?.gameId === capturedId,
+      filter: (node) => !(node instanceof HTMLElement && (node.classList.contains("overview-actions") || node.classList.contains("build-share"))),
     })
 
     notify({ kind: "success", title: "分享图片已复制", message: "可以直接粘贴到聊天窗口" })
@@ -431,6 +431,7 @@ async function copyImage() {
             @keydown.space.prevent="emit('openPlayer', player)"
           >
             <div class="champion-cell">
+              <BuildShare :game="player" :assets="gameAssets" :champions="champions" :server="sgpServerId" :identity="player.puuid" />
               <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="42" />
               <span
                 v-if="!showPlayerAbility"
@@ -472,11 +473,12 @@ async function copyImage() {
 
             <div class="rune-grid text-grid" v-if="player.augmentIds.length">
               <span
-                v-for="augmentId in player.augmentIds.slice(0, 4)"
+                v-for="augmentId in player.augmentIds"
                 :key="augmentId"
                 :class="['augment-tag', augmentRarityClass(augmentId)]"
+                :title="plainDescription(augmentMap[augmentId]?.description || '说明暂不可用')"
               >
-                {{ shortAugmentName(augmentId) }}
+                {{ augmentName(augmentId) }}
               </span>
             </div>
             <div class="rune-grid" v-else>
@@ -748,10 +750,13 @@ async function copyImage() {
 
 .champion-cell {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
+
+.champion-cell > .build-share { order:3; flex-basis:100%; }
 
 .champion-cell span {
   min-width: 0;
@@ -1005,4 +1010,6 @@ async function copyImage() {
   color: #657179;
   background: #edf4f2;
 }
+.text-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; overflow: visible; }
+.text-grid .augment-tag { width:auto; height:auto; min-height:22px; white-space:normal; overflow-wrap:anywhere; line-height:1.4; padding:3px; }
 </style>

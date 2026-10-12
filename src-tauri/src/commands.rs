@@ -916,6 +916,48 @@ fn reuse_live_players(response: &mut LiveGameResponse, generation: u64) {
     response.diagnostics.completed_players = response.diagnostics.reused_players;
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampionChoiceSnapshot {
+    sgp_server_id: String,
+    observer_puuid: String,
+    champion_id: u32,
+    bench_champion_ids: Option<Vec<u32>>,
+}
+
+// Read-only, independent of history enrichment and its shared concurrency budget.
+#[tauri::command]
+pub async fn load_champion_choices() -> Result<Option<ChampionChoiceSnapshot>, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let flow = clients.lcu.gameflow_session().await.map_err(app_error)?;
+    if !flow.is_some_and(|s| s.phase == "ChampSelect" && s.game_data.queue.id == 2400) {
+        return Ok(None);
+    }
+    let (selection, current) = futures::join!(clients.lcu.champ_select_session(), clients.lcu.current_summoner());
+    let Some(selection) = selection.map_err(app_error)? else { return Ok(None) };
+    let current = current.map_err(app_error)?;
+    Ok(champion_choice_snapshot(selection, &current.puuid, crate::services::sgp::default_sgp_server_id(&clients.auth)))
+}
+
+fn champion_choice_snapshot(
+    selection: crate::services::models::ChampSelectSession,
+    observer: &str,
+    server: String,
+) -> Option<ChampionChoiceSnapshot> {
+    if !is_real_puuid(observer) { return None; }
+    let player = selection.my_team.iter().find(|p| is_real_puuid(&p.puuid) && p.puuid.eq_ignore_ascii_case(observer))?;
+    let champion_id = if player.champion_id > 0 { player.champion_id } else { player.champion_pick_intent };
+    let bench_champion_ids = if selection.bench_enabled == Some(true) {
+        selection.bench_champions.map(|rows| rows.into_iter().map(|r| r.champion_id).filter(|id| *id > 0).collect::<BTreeSet<_>>().into_iter().collect())
+    } else { None };
+    Some(ChampionChoiceSnapshot {
+        sgp_server_id: server,
+        observer_puuid: observer.to_string(),
+        champion_id,
+        bench_champion_ids,
+    })
+}
+
 #[tauri::command]
 pub async fn load_live_game(
     app: AppHandle,
@@ -1099,6 +1141,12 @@ async fn build_live_roster(clients: &Clients) -> Result<LiveGameResponse, String
             return Err(app_error(AppError::LiveGameUnavailable));
         };
 
+        let bench_champion_ids = if session.bench_enabled == Some(true) {
+            session.bench_champions.as_ref().map(|rows| {
+                rows.iter().map(|row| row.champion_id).filter(|id| *id > 0)
+                    .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>()
+            })
+        } else { None };
         let our_players = session
             .my_team
             .into_iter()
@@ -1141,6 +1189,7 @@ async fn build_live_roster(clients: &Clients) -> Result<LiveGameResponse, String
 
         return Ok(crate::services::encounters::annotate(
             LiveGameResponse {
+                bench_champion_ids,
                 sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
                 diagnostics: Default::default(),
                 encounters: Vec::new(),
@@ -1223,6 +1272,7 @@ async fn build_live_roster(clients: &Clients) -> Result<LiveGameResponse, String
 
         return Ok(crate::services::encounters::annotate(
             LiveGameResponse {
+                bench_champion_ids: None,
                 sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
                 diagnostics: Default::default(),
                 encounters: Vec::new(),
@@ -1943,6 +1993,28 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
 mod live_tests {
     use super::*;
     #[test]
+    fn choice_snapshot_uses_only_confirmed_self_and_valid_bench_ids() {
+        let session: crate::services::models::ChampSelectSession = serde_json::from_str(r#"{
+            "benchEnabled":true,"benchChampions":[{"championId":22},{"championId":22},{"championId":0},{}],
+            "myTeam":[{"puuid":"player-abcdefghijkl","championId":1,"championPickIntent":2},{"puuid":"another-abcdefghijkl","championId":3}]
+        }"#).unwrap();
+        let result=champion_choice_snapshot(session.clone(),"player-abcdefghijkl","TENCENT_HN1".into()).unwrap();
+        assert_eq!(result.champion_id,1);
+        assert_eq!(result.bench_champion_ids,Some(vec![22]));
+        assert!(champion_choice_snapshot(session.clone(),"unknown-abcdefghijkl","TENCENT_HN1".into()).is_none());
+        assert!(champion_choice_snapshot(session,"0","TENCENT_HN1".into()).is_none());
+    }
+    #[test]
+    fn champion_select_bench_is_optional_and_preserves_known_empty() {
+        let missing: crate::services::models::ChampSelectSession = serde_json::from_str("{}").unwrap();
+        assert!(missing.bench_champions.is_none());
+        let empty: crate::services::models::ChampSelectSession = serde_json::from_str(r#"{"benchEnabled":true,"benchChampions":[]}"#).unwrap();
+        assert_eq!(empty.bench_enabled, Some(true));
+        assert!(empty.bench_champions.unwrap().is_empty());
+        let rows: crate::services::models::ChampSelectSession = serde_json::from_str(r#"{"benchEnabled":true,"benchChampions":[{"championId":22}]}"#).unwrap();
+        assert_eq!(rows.bench_champions.unwrap()[0].champion_id,22);
+    }
+    #[test]
     fn premade_group_requires_common_matches_not_unrelated_pair_counts() {
         let ids = vec!["a".into(), "b".into(), "c".into()];
         let mut pairs = HashMap::new();
@@ -1979,7 +2051,7 @@ mod live_tests {
     fn command_future_is_send() {
         fn assert_send<T:Send>(_value:T){}
         // Validate the future type without constructing an app or contacting a client.
-        fn check(app:AppHandle){assert_send(load_live_game(app,50,"test".into(),None));}
+        fn check(app:AppHandle){assert_send(load_live_game(app,50,"test".into(),None));assert_send(load_champion_choices());}
         let _=check;
     }
 }
