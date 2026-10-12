@@ -24,6 +24,10 @@ pub fn serve(responses: Vec<(u16, String)>) -> (String, JoinHandle<Vec<String>>)
                     Err(e) => panic!("fixture accept: {e}"),
                 }
             };
+            // Windows can inherit the listener's nonblocking mode. Reads below
+            // deliberately block with a timeout, including fragmented requests.
+            stream.set_nonblocking(false).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
