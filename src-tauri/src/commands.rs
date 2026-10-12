@@ -1583,7 +1583,9 @@ fn premade_subset_times(
     puuids: &[String],
     pair_games: &HashMap<(String, String), HashSet<u64>>,
 ) -> Option<usize> {
-    let mut min_times = usize::MAX;
+    // Every member must have shared the same matches. Pairwise counts alone
+    // can join three unrelated duos into a fictitious three-player group.
+    let mut shared: Option<HashSet<u64>> = None;
 
     for i in 0..puuids.len().saturating_sub(1) {
         for j in (i + 1)..puuids.len() {
@@ -1592,12 +1594,15 @@ fn premade_subset_times(
             } else {
                 (puuids[j].clone(), puuids[i].clone())
             };
-            let times = pair_games.get(&key)?.len();
-            min_times = min_times.min(times);
+            let games = pair_games.get(&key)?;
+            match &mut shared {
+                Some(common) => common.retain(|id| games.contains(id)),
+                None => shared = Some(games.clone()),
+            }
         }
     }
 
-    Some(min_times)
+    shared.map(|games| games.len())
 }
 
 fn assign_premade_group(
@@ -1937,6 +1942,18 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    #[test]
+    fn premade_group_requires_common_matches_not_unrelated_pair_counts() {
+        let ids = vec!["a".into(), "b".into(), "c".into()];
+        let mut pairs = HashMap::new();
+        pairs.insert(("a".into(), "b".into()), HashSet::from([1, 2, 3]));
+        pairs.insert(("a".into(), "c".into()), HashSet::from([4, 5, 6]));
+        pairs.insert(("b".into(), "c".into()), HashSet::from([7, 8, 9]));
+        assert_eq!(premade_subset_times(&ids, &pairs), Some(0));
+        for games in pairs.values_mut() { games.extend([10, 11, 12]); }
+        assert_eq!(premade_subset_times(&ids, &pairs), Some(3));
+        assert_eq!(premade_subset_times(&ids[..2], &pairs), Some(6));
+    }
     #[test]
     fn hex_aram_history_does_not_mix_with_normal_aram_or_ranked() {
         let filter = live_queue_filter(Some(2400), None, Some("ARAM"));

@@ -23,15 +23,20 @@ export async function copyElementAsPng(
   if (!blob) throw new Error("图片生成失败")
 
   if (options.shouldWrite && !options.shouldWrite()) throw new Error("分享已取消，未写入剪贴板")
-  await writeImageBlobToClipboard(blob)
+  await writeImageBlobToClipboard(blob, options.shouldWrite)
 }
 
-async function writeImageBlobToClipboard(blob: Blob) {
+async function writeImageBlobToClipboard(blob: Blob, shouldWrite?: () => boolean) {
+  const check = () => {
+    if (shouldWrite && !shouldWrite()) throw new Error("分享已取消，未写入剪贴板")
+  }
   const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()))
+  check()
   try {
     await copyPngToClipboard(bytes)
     return
   } catch (backendError) {
+    check()
     if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
       throw backendError
     }
