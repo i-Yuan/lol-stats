@@ -734,6 +734,10 @@ pub struct ChampSelectPlayer {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveGameResponse {
+    pub sgp_server_id: String,
+    pub encounters: Vec<super::encounters::EncounterSummary>,
+    pub observer_puuid: Option<String>,
+    pub encounter_warning: Option<String>,
     /// LCU 原始 gameflow phase，例如 ChampSelect / InProgress。
     pub phase: String,
     /// 面向实时战绩的简化阶段：champ-select / in-game。

@@ -1709,7 +1709,7 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   try {
     await ensureClientReady()
     const nextLiveGame = await loadLiveGame(LIVE_STATS_DEPTH)
-    const nextSignature = buildLiveGameRenderSignature(nextLiveGame)
+    const nextSignature = buildLiveGameRenderSignature(nextLiveGame) + JSON.stringify([nextLiveGame.sgpServerId, nextLiveGame.encounters, nextLiveGame.encounterWarning])
     if (!liveGame.value || nextSignature !== liveGameRenderSignature) {
       liveGame.value = nextLiveGame
       liveGameRenderSignature = nextSignature

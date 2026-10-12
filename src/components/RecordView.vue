@@ -16,6 +16,7 @@ import { rankIconLarge } from "../rankIcons"
 import { mitigationValue, riotId, teamMitigationValue } from "../utils"
 import MatchHistoryPanel from "./MatchHistoryPanel.vue"
 import StatsPanel from "./StatsPanel.vue"
+import RecentTrend from "./RecentTrend.vue"
 import DataStatus from "./DataStatus.vue"
 import PlayerNoteEditor from "./PlayerNoteEditor.vue"
 
@@ -488,6 +489,8 @@ function round2(value: number) {
 
     <div class="loading-pill" v-if="loading">正在读取数据</div>
     <p v-if="error" role="alert" class="record-error">本次读取失败：{{ error }}。如仍显示战绩，它来自上次读取；可点击刷新重试。</p>
+
+    <RecentTrend v-if="activeTab === 'recent' && recentStats" :stats="recentStats" :champions="champions" @load-more="emit('loadRecentMore')" />
 
     <MatchHistoryPanel
       v-if="activeTab === 'recent'"

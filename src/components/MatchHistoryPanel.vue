@@ -8,6 +8,7 @@ import type {
   PlayerStatsResponse,
 } from "../types"
 import { fixed } from "../utils"
+import RecentGamesShare from "./RecentGamesShare.vue"
 import GameRecordList from "./GameRecordList.vue"
 
 const props = defineProps<{
@@ -104,6 +105,8 @@ watch(
         <strong>{{ fixed(stats.summary.averageKda) }}</strong>
       </div>
     </div>
+
+    <RecentGamesShare :stats="stats" :champions="champions" />
 
     <GameRecordList
       :games="stats.recentGames"

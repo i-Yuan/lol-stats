@@ -281,7 +281,17 @@ export interface LiveTeam {
   players: LivePlayer[]
 }
 
+export interface EncounterSummary {
+  puuid: string
+  previousGames: number
+  lastSeenAt: number | null
+}
+
 export interface LiveGameResponse {
+  sgpServerId?: string
+  encounters?: EncounterSummary[]
+  observerPuuid?: string
+  encounterWarning?: string
   phase: string
   queryStage: string
   gameId?: number

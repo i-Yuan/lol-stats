@@ -18,6 +18,7 @@ import type {
   LiveTeam,
   RecentGame,
 } from "../types"
+import EncounterNotice from "./EncounterNotice.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 import DataStatus from "./DataStatus.vue"
 import PlayerNoteEditor from "./PlayerNoteEditor.vue"
@@ -346,6 +347,7 @@ function premadeTitle(marker: LivePremadeMarker) {
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
     <template v-else-if="liveGame.teams.some((team) => team.players.length)">
+      <EncounterNotice :game="liveGame" />
       <div class="live-stale-notice" v-if="error">
         {{ error }}，已保留上一局实时战绩
       </div>

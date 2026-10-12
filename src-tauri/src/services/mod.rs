@@ -8,3 +8,4 @@ pub mod stats;
 pub mod tools;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod encounters;

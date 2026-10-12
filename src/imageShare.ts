@@ -5,6 +5,7 @@ type CopyElementOptions = {
   backgroundColor?: string
   filter?: (node: Node) => boolean
   pixelRatio?: number
+  shouldWrite?: () => boolean
 }
 
 export async function copyElementAsPng(
@@ -21,6 +22,7 @@ export async function copyElementAsPng(
 
   if (!blob) throw new Error("图片生成失败")
 
+  if (options.shouldWrite && !options.shouldWrite()) throw new Error("分享已取消，未写入剪贴板")
   await writeImageBlobToClipboard(blob)
 }
 

@@ -931,7 +931,11 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
         };
         assign_premade_markers(&mut teams);
 
-        return Ok(LiveGameResponse {
+        return Ok(crate::services::encounters::annotate(LiveGameResponse {
+            sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
+            encounters: Vec::new(),
+            observer_puuid: None,
+            encounter_warning: None,
             phase,
             query_stage: "champ-select".to_string(),
             game_id,
@@ -939,7 +943,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
             queue_type,
             game_mode,
             teams,
-        });
+        }, current_puuid.as_deref()));
     }
 
     if matches!(
@@ -1021,7 +1025,11 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
         };
         assign_premade_markers(&mut teams);
 
-        return Ok(LiveGameResponse {
+        return Ok(crate::services::encounters::annotate(LiveGameResponse {
+            sgp_server_id: crate::services::sgp::default_sgp_server_id(&clients.auth),
+            encounters: Vec::new(),
+            observer_puuid: None,
+            encounter_warning: None,
             phase,
             query_stage: "in-game".to_string(),
             game_id,
@@ -1029,7 +1037,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
             queue_type,
             game_mode,
             teams,
-        });
+        }, current_puuid.as_deref()));
     }
 
     Err(app_error(AppError::LiveGameUnavailable))
