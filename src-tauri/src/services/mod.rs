@@ -10,3 +10,4 @@ pub mod tools;
 pub(crate) mod test_support;
 pub mod encounters;
 pub mod live_cache;
+pub mod live_cancellation;

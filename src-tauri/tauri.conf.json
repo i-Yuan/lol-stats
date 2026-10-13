@@ -17,6 +17,19 @@
         "height": 836,
         "minWidth": 1040,
         "minHeight": 680
+      },
+      {
+        "label": "compact",
+        "url": "index.html?compact=1",
+        "title": "对局速览 · lol-stats",
+        "width": 440,
+        "height": 640,
+        "minWidth": 360,
+        "minHeight": 300,
+        "visible": false,
+        "focus": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": false
       }
     ],
     "security": {
@@ -25,10 +38,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "windows": {
       "nsis": {
-        "languages": ["SimpChinese"],
+        "languages": [
+          "SimpChinese"
+        ],
         "customLanguageFiles": {
           "SimpChinese": "nsis/SimpChinese.nsh"
         }

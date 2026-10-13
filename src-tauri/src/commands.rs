@@ -45,6 +45,9 @@ const ALL_SEARCH_SGP_SERVER_IDS: [&str; 8] = [
     "TENCENT_BGP2",
 ];
 
+static LIVE_CANCELLATION: LazyLock<crate::services::live_cancellation::LiveCancellation> =
+    LazyLock::new(crate::services::live_cancellation::LiveCancellation::default);
+
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -802,6 +805,10 @@ pub async fn search_player_with_progress(
 
 #[tauri::command]
 pub fn cancel_stats_load(request_id: String) {
+    if request_id.starts_with("live-") {
+        LIVE_CANCELLATION.cancel(&request_id);
+        return;
+    }
     if let Ok(mut requests) = CANCELLED_STATS_LOADS.lock() {
         requests.insert(request_id);
     }
@@ -968,6 +975,10 @@ pub async fn load_live_game(
     if request_id.is_empty() || request_id.len() > 128 {
         return Err("实时请求标识无效".into());
     }
+    LIVE_CANCELLATION.run(&request_id, load_live_game_inner(app, depth, request_id.clone(), force_refresh)).await
+}
+
+async fn load_live_game_inner(app: AppHandle, depth: usize, request_id: String, force_refresh: Option<bool>) -> Result<LiveGameResponse, String> {
     let started = std::time::Instant::now();
     let clients = create_clients().map_err(app_error)?;
     let mut response = build_live_roster(&clients).await?;

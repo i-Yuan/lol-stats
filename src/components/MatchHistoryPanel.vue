@@ -110,12 +110,14 @@ watch(
       </div>
     </div>
 
-    <RecentGamesShare :stats="stats" :champions="champions" />
+    <div class="history-actions">
+    <RecentGamesShare :stats="stats" :champions="champions" :game-assets="gameAssets" :visible-games="filteredGames" />
 
     <label v-if="augmentOptions.length">海克斯强化筛选
       <select v-model.number="augmentFilter"><option :value="0">全部已加载对局</option><option v-for="a in augmentOptions" :key="a.id" :value="a.id">{{a.name}}</option></select>
       <small v-if="augmentFilter"> 匹配 {{filteredGames.length}} 局，仅筛选已加载海克斯对局；上方汇总仍为全部样本。</small>
     </label>
+    </div>
     <GameRecordList
       :games="filteredGames"
       :champions="champions"
@@ -143,6 +145,8 @@ watch(
 </template>
 
 <style scoped>
+.history-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.history-actions>label{font-size:11px;color:#728578}.history-actions select{margin-left:6px;padding:6px 8px;border:1px solid #d0ddd4;border-radius:6px;background:#fff;color:#476853;max-width:240px}.history-actions small{display:block;margin-top:4px}.history-actions :deep(.share-preview){width:100%}.history-actions:has(.share-preview){display:block}
+
 .empty-panel {
   display: grid;
   min-height: 420px;

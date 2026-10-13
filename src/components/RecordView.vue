@@ -467,9 +467,16 @@ function round2(value: number) {
     </header>
 
     <PlayerNoteEditor v-if="currentSummoner" :server="resolvedServer" :puuid="currentSummoner.puuid" :display-name="riotId(currentSummoner)" />
-    <DataStatus v-if="activeStats" :stats="activeStats" />
+    <template v-if="activeStats">
+      <DataStatus v-if="activeTab !== 'recent'" :stats="activeStats" />
+      <template v-else>
+        <p v-if="!activeStats.dataStatus || activeStats.dataStatus.stale || activeStats.dataStatus.partial" class="record-data-warning">{{!activeStats.dataStatus ? '更新时间未知' : activeStats.dataStatus.stale ? '当前使用旧缓存' : '部分样本'}} · 列表仅展示已取得战绩</p>
+        <details class="record-secondary"><summary>数据来源、更新时间与样本范围</summary><DataStatus :stats="activeStats" /></details>
+      </template>
+    </template>
 
-    <section class="rank-strip" v-if="activeTab === 'recent' && (rankedLoading || rankCards.length)">
+    <details class="record-secondary" v-if="activeTab === 'recent' && (rankedLoading || rankCards.length)"><summary>排位段位（展开查看）</summary>
+    <section class="rank-strip">
       <div class="rank-card loading" v-if="rankedLoading && !rankCards.length">
         <span>段位</span>
         <strong>读取中</strong>
@@ -486,11 +493,12 @@ function round2(value: number) {
         </div>
       </article>
     </section>
+    </details>
 
     <div class="loading-pill" v-if="loading">正在读取数据</div>
     <p v-if="error" role="alert" class="record-error">本次读取失败：{{ error }}。如仍显示战绩，它来自上次读取；可点击刷新重试。</p>
 
-    <RecentTrend v-if="activeTab === 'recent' && recentStats" :stats="recentStats" :champions="champions" @load-more="emit('loadRecentMore')" />
+    <details class="record-secondary" v-if="activeTab === 'recent' && recentStats"><summary>近期趋势 · 最近 20 场与此前 20 场</summary><RecentTrend :stats="recentStats" :champions="champions" @load-more="emit('loadRecentMore')" /></details>
 
     <MatchHistoryPanel
       v-if="activeTab === 'recent'"
@@ -607,6 +615,10 @@ function round2(value: number) {
 </template>
 
 <style scoped>
+.record-secondary { font-size: 11px; color: #7a8b81; margin: 3px 0; }
+.record-secondary > summary { cursor: pointer; padding: 3px 0; }
+.record-secondary[open] > summary { color: #3d7356; margin-bottom: 8px; }
+.record-data-warning { color: #a47639; font-size: 12px; margin: 4px 0; }
 .record-view {
   display: flex;
   flex-direction: column;

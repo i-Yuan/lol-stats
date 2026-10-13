@@ -20,15 +20,17 @@ const renderer=createRenderer({createElement:node,createText:node,createComment:
 function setup(){
  let calls=0,finish,shouldWrite;const notices=[];const module={exports:{}}
  vm.runInNewContext('(function(require,module,exports){'+code+'\n})',{console})(id=>{
+  if(id==='../assetLoader')return {loadAssetDataUrl:async()=>''}
   if(id==='../recentInsights')return insights
+  if(id==='./GameRecordList.vue')return {default:{render:()=>null}}
   if(id==='../imageShare')return {copyElementAsPng:(_element,options)=>{shouldWrite=options.shouldWrite;calls++;return new Promise(resolve=>finish=resolve)}}
   if(id==='../notifications')return {notifyKey:'notify'}
   if(id==='../utils')return {riotId:s=>s.gameName||'未知玩家'}
   return require(id)
  },module,module.exports)
  const component=module.exports.default;component.render=()=>null
- const stats={summoner:{puuid:'player-a',gameName:'A'},dataStatus:{source:'cache'},recentGames:[{gameId:1,gameCreation:1000,gameDuration:1000,queueId:420,win:true}]}
- const vnode=h(component,{stats,champions:{}});vnode.appContext={...renderer.createApp(component)._context,provides:{notify:n=>notices.push(n)}}
+ const stats={summoner:{puuid:'player-a',gameName:'A'},dataStatus:{source:'cache'},recentGames:[{gameId:1,gameCreation:1000,gameDuration:1000,queueId:420,win:true,itemIds:[],perkIds:[],augmentIds:[]}]}
+ const vnode=h(component,{stats,champions:{},gameAssets:{items:[],augments:[],perks:[],summonerSpells:[]}});vnode.appContext={...renderer.createApp(component)._context,provides:{notify:n=>notices.push(n)}}
  renderer.render(vnode,node());const state=vnode.component.setupState
  return {state,stats,notices,get calls(){return calls},finish:()=>finish?.(),instance:vnode.component,canWrite:()=>shouldWrite?.()}
 }
@@ -63,4 +65,10 @@ test('background refresh of the same identity keeps the frozen preview',async()=
  const t=setup();t.state.open();const snapshot=t.state.snapshot
  t.instance.props.stats={...t.stats,recentGames:[...t.stats.recentGames,{gameId:2}]};await nextTick()
  assert.equal(t.state.opened,true);assert.equal(t.state.snapshot,snapshot);assert.equal(t.state.rows.length,1)
+})
+
+test('list sharing freezes current filtered games and keeps visual equipment fields',()=>{
+ const t=setup();t.instance.props.visibleGames=[{...t.stats.recentGames[0],itemIds:[1001],augmentIds:[1,2,3,4,5,6]}]
+ t.state.open();assert.equal(t.state.listGames.length,1);assert.equal(t.state.listGames[0].itemIds[0],1001);assert.equal(t.state.listGames[0].augmentIds.length,6)
+ t.instance.props.visibleGames=[];assert.equal(t.state.listGames.length,1)
 })

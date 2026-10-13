@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref } from "vue"
 import {
   buildChampionProfiles,
   buildPlayerProfile,
@@ -18,6 +18,7 @@ import type {
   LiveTeam,
   RecentGame,
 } from "../types"
+import { findPlayerNote } from "../playerNotes"
 import ChampionChoicePanel from "./ChampionChoicePanel.vue"
 import EncounterNotice from "./EncounterNotice.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
@@ -25,11 +26,14 @@ import DataStatus from "./DataStatus.vue"
 import PlayerNoteEditor from "./PlayerNoteEditor.vue"
 import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
+const detailsOpen = ref(false)
 const LIVE_DISPLAY_DEPTH = 50
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
 
 const props = withDefaults(
   defineProps<{
+    observedPhase?: string | null
+    active?: boolean
     liveGame: LiveGameResponse | null
     champions: Record<number, ChampionSummaryItem>
     gameAssets: GameAssetBundle
@@ -39,6 +43,7 @@ const props = withDefaults(
   }>(),
   {
     cardExtraHeight: 0,
+    active: true,
   },
 )
 
@@ -326,83 +331,68 @@ function premadeTitle(marker: LivePremadeMarker) {
       : marker.source
   return members ? `${marker.label} · ${source} · ${members}` : `${marker.label} · ${source}`
 }
+function noteFor(player: LivePlayer) {
+  return props.liveGame?.sgpServerId && player.puuid && !player.isPlaceholder
+    ? findPlayerNote(props.liveGame.sgpServerId, player.puuid) : undefined
+}
+function encounterCount(player: LivePlayer) {
+  return props.liveGame?.encounters?.find(e => e.puuid.toLowerCase() === player.puuid.toLowerCase())?.previousGames || 0
+}
+function sampleWarning(player: LivePlayer) {
+  if (player.error) return "读取不完整"
+  if (!player.stats) return player.isPlaceholder ? "身份未公开" : props.liveGame?.diagnostics?.stage === "interrupted" ? "待刷新" : "加载中"
+  if (!player.stats.dataStatus) return "状态未知"
+  if (player.stats.dataStatus.stale) return "旧缓存"
+  if (player.stats.dataStatus.partial) return "部分样本"
+  return ""
+}
 </script>
 
 <template>
   <section class="live" :style="livePanelStyle">
     <header class="live-header">
       <div>
-        <div class="label">实战读取</div>
-        <h2>{{ liveGame ? phaseName(liveGame.phase) : "未读取" }}</h2>
+        <h2>{{ observedPhase === null && liveGame ? "连接待确认 · 保留已有数据" : liveGame ? phaseName(liveGame.phase) : "未读取" }}</h2>
       </div>
       <div class="game-meta" v-if="liveGame">
         <span>{{ queryStageName(liveGame.queryStage) }}</span>
         <span>{{ queueName(liveGame) }}</span>
-        <span v-if="liveGame.gameId">对局 {{ liveGame.gameId }}</span>
+
       </div>
     </header>
+
+    <ChampionChoicePanel v-if="(observedPhase || liveGame?.phase) === 'ChampSelect'" :game="liveGame" :phase="observedPhase" :enabled="active" :champions="champions" />
+    <details v-else class="choice-entry"><summary>海克斯选人助手 · {{liveGame ? '选人阶段自动启用' : '等待进入选人'}}</summary><ChampionChoicePanel :game="liveGame" :phase="observedPhase" :enabled="false" :champions="champions" /></details>
 
     <div class="live-empty" v-if="loading && !liveGame">正在读取双方近 50 局</div>
     <div class="live-empty error" v-else-if="!liveGame && error">{{ error }}</div>
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
     <template v-else-if="liveGame.teams.some((team) => team.players.length)">
-      <ChampionChoicePanel :game="liveGame" :champions="champions" />
-      <EncounterNotice :game="liveGame" />
-      <div class="live-stale-notice" v-if="liveGame.diagnostics && ['roster','history'].includes(liveGame.diagnostics.stage)">
-        名单已就绪 · 战绩 {{ liveGame.diagnostics.completedPlayers }}/{{ liveGame.diagnostics.totalPlayers }} 人完成。客户端分组先展示，历史同队推断会随样本补全更新。
-      </div>
-      <details v-if="liveGame.diagnostics" class="live-diagnostics">
-        <summary>查询耗时与复用情况</summary>
-        <p>名单阶段 {{ liveGame.diagnostics.rosterMs }} ms · 总耗时 {{ liveGame.diagnostics.elapsedMs }} ms · 等待并发队列 {{ liveGame.diagnostics.queueWaitMs }} ms</p>
-        <p>复用 {{ liveGame.diagnostics.reusedPlayers }} 人 · 本次玩家任务 {{ liveGame.diagnostics.playerJobs }} 个 · 玩家并发上限 {{ liveGame.diagnostics.concurrencyLimit }} · 最慢玩家 {{ liveGame.diagnostics.slowestPlayerMs }} ms</p>
-        <small>玩家任务数不是 HTTP 请求数；每名玩家内部身份和战绩可并行。耗时不含前端连接准备。客户端分组字段尚待国服实测；历史同队仅代表疑似组队。</small>
-      </details>
       <div class="live-stale-notice" v-if="error">
-        {{ error }}，已保留上一局实时战绩
+        {{ error }}，保留已取得数据
       </div>
 
-      <div class="team-averages">
-        <section
-          class="team-average"
-          v-for="teamView in liveTeamViews"
-          :key="`average-${teamView.team.name}`"
-        >
-          <header>
-            <strong>{{ teamAverageName(teamView.team) }}</strong>
-            <span>{{ teamView.summary.players }} 人样本</span>
-          </header>
-          <div class="average-metrics" v-if="teamView.summary.players > 0">
-            <span>
-              <i>平均胜率</i>
-              <b>{{ statPercent(teamView.summary.winRate) }}</b>
-            </span>
-            <span>
-              <i>平均伤害</i>
-              <b>{{ statPercent(teamView.summary.damageShare) }}</b>
-            </span>
-            <span>
-              <i>平均 KDA</i>
-              <b>{{ statFixed(teamView.summary.averageKda) }}</b>
-            </span>
-            <span>
-              <i>平均伤转</i>
-              <b>{{ statFixed(teamView.summary.damageConversion) }}</b>
-            </span>
-            <span>
-              <i>平均承伤</i>
-              <b>{{ statPercent(teamView.summary.mitigationShare) }}</b>
-            </span>
-            <span>
-              <i>平均评分</i>
-              <b>{{ statFixed(teamView.summary.averageScore, 0) }}分</b>
-            </span>
-          </div>
-          <p v-else>尚无有效样本，暂不计算队伍均值。</p>
+      <div class="live-stale-notice" v-if="liveGame.diagnostics && ['roster','history'].includes(liveGame.diagnostics.stage)">
+        战绩 {{ liveGame.diagnostics.completedPlayers }}/{{ liveGame.diagnostics.totalPlayers }} 人就绪 · 其余后台补齐
+      </div>
+      <div class="roster-overview" aria-label="双方玩家速览">
+        <section v-for="teamView in liveTeamViews" :key="teamView.team.name" class="roster-team">
+          <header><strong>{{teamView.team.name}} <small>{{teamView.team.side || '阵营待确认'}}</small></strong><span>{{teamView.players.length}} 人<template v-if="teamView.summary.players"> · 均胜 {{statPercent(teamView.summary.winRate)}}</template></span></header>
+          <article v-for="(view,index) in teamView.players" :key="view.player.puuid || index" class="roster-player">
+            <ChampionAvatar :champion-id="view.player.championId || view.player.championPickIntent" :champions="champions" :size="34" />
+            <div class="roster-identity"><button @click="emit('openPlayer',view.player)" :title="riotId(view.player.summoner)">{{championName(champions,view.player.championId || view.player.championPickIntent)}} <small>{{riotId(view.player.summoner)}}</small></button>
+              <div class="roster-signals"><span v-if="view.player.premade" :title="premadeTitle(view.player.premade)">{{view.player.premade.label}}</span><span v-if="noteFor(view.player)?.favorite">★</span><span v-if="noteFor(view.player)?.tag">{{noteFor(view.player)?.tag}}</span><span v-if="encounterCount(view.player)">相遇 {{encounterCount(view.player)}} 次</span><span class="sample-warning" v-if="sampleWarning(view.player)">{{sampleWarning(view.player)}}</span></div>
+              <p v-if="noteFor(view.player)?.note" :title="noteFor(view.player)?.note">{{noteFor(view.player)?.note}}</p>
+            </div>
+            <div class="roster-metric"><b :class="winRateTone(view.summary.winRate)">{{view.games.length ? statPercent(view.summary.winRate) : '—'}}</b><small>{{view.games.length}} 场样本</small></div>
+            <div class="roster-metric kda"><b>{{view.games.length ? statFixed(view.summary.averageKda) : '—'}}</b><small>KDA</small></div>
+          </article>
         </section>
       </div>
-
-      <div class="teams">
+      <details class="secondary-details player-details" @toggle="detailsOpen = ($event.target as HTMLDetailsElement).open">
+        <summary>展开玩家画像与近期逐局表现</summary>
+      <div class="teams" v-if="detailsOpen">
         <section class="team" v-for="teamView in liveTeamViews" :key="teamView.team.name">
           <div class="team-title">
             <strong>{{ teamView.team.name }} · {{ teamView.team.side || "阵营待确认" }}</strong>
@@ -562,6 +552,56 @@ function premadeTitle(marker: LivePremadeMarker) {
           </div>
         </section>
       </div>
+      </details>
+      <details class="secondary-details"><summary>队伍统计、相遇记录与查询诊断</summary>
+      <EncounterNotice :game="liveGame" />
+      <details v-if="liveGame.diagnostics" class="live-diagnostics">
+        <summary>查询耗时与复用情况</summary>
+        <p>名单阶段 {{ liveGame.diagnostics.rosterMs }} ms · 总耗时 {{ liveGame.diagnostics.elapsedMs }} ms · 等待并发队列 {{ liveGame.diagnostics.queueWaitMs }} ms</p>
+        <p>复用 {{ liveGame.diagnostics.reusedPlayers }} 人 · 本次玩家任务 {{ liveGame.diagnostics.playerJobs }} 个 · 玩家并发上限 {{ liveGame.diagnostics.concurrencyLimit }} · 最慢玩家 {{ liveGame.diagnostics.slowestPlayerMs }} ms</p>
+        <small>玩家任务数不是 HTTP 请求数；每名玩家内部身份和战绩可并行。耗时不含前端连接准备。客户端分组字段尚待国服实测；历史同队仅代表疑似组队。</small>
+      </details>
+      <div class="team-averages">
+        <section
+          class="team-average"
+          v-for="teamView in liveTeamViews"
+          :key="`average-${teamView.team.name}`"
+        >
+          <header>
+            <strong>{{ teamAverageName(teamView.team) }}</strong>
+            <span>{{ teamView.summary.players }} 人样本</span>
+          </header>
+          <div class="average-metrics" v-if="teamView.summary.players > 0">
+            <span>
+              <i>平均胜率</i>
+              <b>{{ statPercent(teamView.summary.winRate) }}</b>
+            </span>
+            <span>
+              <i>平均伤害</i>
+              <b>{{ statPercent(teamView.summary.damageShare) }}</b>
+            </span>
+            <span>
+              <i>平均 KDA</i>
+              <b>{{ statFixed(teamView.summary.averageKda) }}</b>
+            </span>
+            <span>
+              <i>平均伤转</i>
+              <b>{{ statFixed(teamView.summary.damageConversion) }}</b>
+            </span>
+            <span>
+              <i>平均承伤</i>
+              <b>{{ statPercent(teamView.summary.mitigationShare) }}</b>
+            </span>
+            <span>
+              <i>平均评分</i>
+              <b>{{ statFixed(teamView.summary.averageScore, 0) }}分</b>
+            </span>
+          </div>
+          <p v-else>尚无有效样本，暂不计算队伍均值。</p>
+        </section>
+      </div>
+
+      </details>
     </template>
 
     <div class="live-empty" v-else>当前阶段没有可读取的真实玩家</div>
@@ -572,7 +612,7 @@ function premadeTitle(marker: LivePremadeMarker) {
 .live {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 .live-header {
@@ -590,7 +630,7 @@ function premadeTitle(marker: LivePremadeMarker) {
 h2 {
   margin: 4px 0 0;
   color: #1f2a2e;
-  font-size: 26px;
+  font-size: 15px;
 }
 
 .game-meta {
@@ -611,7 +651,7 @@ h2 {
 
 .live-empty {
   display: grid;
-  min-height: 360px;
+  min-height: 100px;
   place-items: center;
   border: 1px dashed #cbdcd8;
   border-radius: 8px;
@@ -1204,4 +1244,6 @@ h2 {
     grid-template-columns: minmax(var(--live-player-card-min), 1fr);
   }
 }
+.live-header{align-items:center}.game-meta{font-size:11px}.game-meta span{border:0;background:none;padding:0 0 0 10px}.choice-entry{font-size:11px;color:#728277}.choice-entry summary{cursor:pointer}.secondary-details{border-top:1px solid #d9e3de;padding-top:10px;color:#728278;font-size:12px}.secondary-details>summary{cursor:pointer;padding:3px 0 9px}.secondary-details[open]>summary{color:#386d53}.roster-overview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.roster-team{min-width:0}.roster-team>header{display:flex;justify-content:space-between;align-items:center;padding:9px 0;color:#3d584a;border-bottom:2px solid #b6cdc0;gap:8px}.roster-team>header strong{font-size:14px}.roster-team>header small{font-size:11px;font-weight:400;margin-left:6px}.roster-team>header>span{font-size:10px;color:#819087}.roster-player{display:flex;align-items:center;gap:9px;padding:11px 0;min-height:66px;border-bottom:1px solid #dee7e1}.roster-identity{flex:1;min-width:0}.roster-identity>button{display:block;max-width:100%;padding:0;background:none;color:#2b4437;font-size:13px;font-weight:650;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roster-identity>button small{display:block;color:#87958b;font-size:10px;font-weight:400;margin-top:4px;overflow:hidden;text-overflow:ellipsis}.roster-identity>button:hover{color:#2e7d6b}.roster-identity>button:focus-visible{outline:2px solid #2e7d6b}.roster-identity>p{font-size:11px;color:#7d7152;margin:4px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.roster-signals{display:flex;align-items:center;flex-wrap:wrap;gap:4px}.roster-signals:empty{display:none}.roster-signals span{font-size:10px;color:#4e785d;margin-top:4px}.roster-signals span+span:before{content:'·';margin-right:4px;color:#a8b7ac}.roster-signals .sample-warning{color:#ae783a}.roster-metric{flex:0 0 60px;text-align:right}.roster-metric b{display:block;font-size:18px;font-variant-numeric:tabular-nums}.roster-metric small{font-size:10px;color:#8a988f}.roster-metric.kda{flex-basis:44px}.roster-metric.kda b{font-size:14px;color:#536c5d}.live-stale-notice{padding:6px 9px;font-size:11px;font-weight:400}.player-details .teams{margin-top:12px}
+@media(max-width:800px){.roster-overview{gap:14px}.roster-metric.kda{display:none}}
 </style>

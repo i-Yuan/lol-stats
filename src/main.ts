@@ -1,5 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import CompactApp from "./CompactApp.vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const FUNCTION_KEY_PATTERN = /^F([1-9]|1[0-2])$/;
 
@@ -37,4 +39,7 @@ window.addEventListener(
   { capture: true },
 );
 
-createApp(App).mount("#app");
+let compact = false;
+try { compact = getCurrentWindow().label === "compact" } catch {}
+if (compact) document.body.classList.add("compact-body");
+createApp(compact ? CompactApp : App).mount("#app");

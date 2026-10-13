@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { shouldAutoRefreshHistory } from "./liveRefreshPolicy"
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window"
+import { getCurrentWindow, Window as TauriWindow, LogicalSize } from "@tauri-apps/api/window"
 import {
   ArrowLeft,
   ChevronLeft,
@@ -36,6 +37,8 @@ import {
   searchPlayerWithProgress,
   searchSummonerCandidates,
 } from "./api"
+import { compactSnapshot } from "./compactLive"
+import { playerNotes, loadPlayerNotes } from "./playerNotes"
 import LiveGamePanel from "./components/LiveGamePanel.vue"
 import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
 import PlayerRecordTab from "./components/PlayerRecordTab.vue"
@@ -148,7 +151,7 @@ const MAX_STATS_DEPTH = 1000
 const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
-const AUTO_LIVE_PHASES = new Set(["GameStart", "InProgress", "Reconnect"])
+const AUTO_LIVE_PHASES = new Set(["ChampSelect", "GameStart", "InProgress", "Reconnect"])
 const LIVE_DATA_PHASES = new Set([
   "ChampSelect",
   "GameStart",
@@ -287,6 +290,8 @@ const progressOverlay = ref({
 let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
 let activeLiveRequestId = ""
+let observedLivePhase: string | null = null
+let livePhaseRefreshAttempts = 0
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
 let autoAcceptInFlight = false
@@ -1710,17 +1715,62 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   }
 }
 
+const livePhase = ref<string | null>(null)
+const compactOpening = ref(false)
+let compactRevision = 0
+let compactDisposed = false
+const compactListeners: UnlistenFn[] = []
+async function publishCompact() {
+  if (compactDisposed) return
+  await emitTo("compact", "compact-snapshot", compactSnapshot(liveGame.value, livePhase.value, championMap.value, playerNotes.value, ++compactRevision)).catch(() => {})
+}
+async function openCompact() {
+  if (compactOpening.value) return
+  compactOpening.value = true
+  try {
+    const win = await TauriWindow.getByLabel("compact")
+    if (!win) throw new Error("轻量窗口未初始化，请重启应用")
+    await loadPlayerNotes()
+    await win.show()
+    await publishCompact()
+    await win.setFocus()
+  } catch (error) { notifyError("打开轻量对局窗口失败", error) }
+  finally { compactOpening.value = false }
+}
+async function initCompactBridge() {
+  for (const [event, handler] of [
+    ["compact-ready", () => { void publishCompact() }],
+    ["compact-open-main", () => {
+      navigateToPage("live")
+      void getCurrentWindow().show().then(() => getCurrentWindow().setFocus()).catch(error => notifyError("打开主窗口失败", error))
+    }],
+  ] as const) {
+    const unlisten = await listen(event, handler)
+    if (compactDisposed) unlisten(); else compactListeners.push(unlisten)
+  }
+  await publishCompact()
+}
+watch([liveGame, livePhase, championMap, playerNotes], () => { void publishCompact() }, { deep: true })
+
 function startLiveAutoRefresh() {
   if (liveRefreshTimer !== null) return
-  void refreshLiveGame({ silent: Boolean(liveGame.value), switchPage: false })
+  if (!liveGame.value || shouldAutoRefreshHistory(observedLivePhase, liveGame.value, livePhaseRefreshAttempts)) {
+    void refreshLiveGame({ silent: Boolean(liveGame.value), switchPage: false })
+  }
   liveRefreshTimer = window.setInterval(() => {
-    if (activePage.value === "live") {
+    if (activePage.value === "live" && !activeLiveRequestId && shouldAutoRefreshHistory(observedLivePhase, liveGame.value, livePhaseRefreshAttempts)) {
+      livePhaseRefreshAttempts++
       void refreshLiveGame({ silent: true, switchPage: false })
     }
   }, LIVE_AUTO_REFRESH_MS)
 }
 
 function stopLiveAutoRefresh() {
+  if (activeLiveRequestId) void cancelStatsLoad(activeLiveRequestId).catch(() => {})
+  if (activeLiveRequestId && liveGame.value?.diagnostics && ["roster", "history"].includes(liveGame.value.diagnostics.stage)) {
+    liveGame.value.diagnostics.stage = "interrupted"
+    liveError.value = "已暂停本次展示同步，点击刷新可重新获取未完成数据"
+  }
   activeLiveRequestId = ""
   liveLoading.value = false
   liveRefreshing.value = false
@@ -1733,8 +1783,32 @@ function shouldAutoOpenLive(phase?: string | null) {
   return phase ? AUTO_LIVE_PHASES.has(phase) : false
 }
 
+let missingGameflowReads = 0
+let gameflowReadInFlight = false
 async function checkGameflowForAutoLive() {
-  const phase = await loadGameflowPhase().catch(() => null)
+  if (gameflowReadInFlight) return
+  gameflowReadInFlight = true
+  let phase: string | null
+  try { phase = await loadGameflowPhase().catch(() => null) }
+  finally { gameflowReadInFlight = false }
+  if (compactDisposed) return
+  if (!phase) {
+    missingGameflowReads++
+    livePhase.value = null
+    // A single failed lightweight probe must not invalidate the match and trigger
+    // another full history batch as soon as the next probe succeeds.
+    if (missingGameflowReads < 3) return
+  } else { missingGameflowReads = 0 }
+  if (phase !== observedLivePhase && (!phase || !LIVE_DATA_PHASES.has(phase) || phase === "ChampSelect")) {
+    if (activeLiveRequestId) void cancelStatsLoad(activeLiveRequestId).catch(() => {})
+    activeLiveRequestId = ""
+    liveGame.value = null
+    liveLoading.value = false
+    liveRefreshing.value = false
+  }
+  if (phase !== observedLivePhase) livePhaseRefreshAttempts = 0
+  observedLivePhase = phase
+  livePhase.value = phase
   void checkAutoAccept(phase)
   const shouldOpen = shouldAutoOpenLive(phase)
 
@@ -1802,6 +1876,7 @@ watch(activePage, (page, previousPage) => {
 })
 
 onMounted(async () => {
+  void initCompactBridge().catch(error => notifyError("小窗同步初始化失败", error))
   void initWindowSizeSettings()
   await initAppVersionAndReleaseNotes()
   startGameflowWatcher()
@@ -1816,6 +1891,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  compactDisposed = true
+  compactListeners.forEach(unlisten => unlisten())
   unlistenProgress?.()
   stopGameflowWatcher()
   stopLiveAutoRefresh()
@@ -1932,6 +2009,7 @@ onUnmounted(() => {
             <div class="eyebrow">Live Game</div>
             <h2>实时战绩</h2>
           </div>
+          <button class="compact-launch" @click="openCompact" :disabled="compactOpening">{{ compactOpening ? "打开中…" : "轻量对局窗 ↗" }}</button>
           <button @click="refreshLiveGame({ forceRefresh: true })" :disabled="liveLoading || liveRefreshing" title="绕过本局复用和统计缓存重新查询">强制刷新</button>
           <button class="primary-action" @click="refreshLiveGame()" :disabled="liveLoading || liveRefreshing">
             <LoaderCircle v-if="liveLoading || liveRefreshing" class="spin" :size="16" />
@@ -1942,6 +2020,8 @@ onUnmounted(() => {
 
         <LiveGamePanel
           :live-game="liveGame"
+          :observed-phase="livePhase"
+          :active="activePage === 'live'"
           :champions="championMap"
           :game-assets="gameAssets"
           :loading="liveLoading"
@@ -2301,6 +2381,8 @@ button:disabled {
 </style>
 
 <style scoped>
+.live-refresh-hint { margin: -8px 0 18px; color: #6f8379; font-size: 12px; line-height: 1.6; }
+.compact-launch { background: #e1eee7; color: #2e6b56; border: 1px solid #c8dcd0; border-radius: 9px; padding: 9px 13px; cursor: pointer; }
 .app-shell {
   display: grid;
   grid-template-columns: 124px minmax(0, 1fr);
