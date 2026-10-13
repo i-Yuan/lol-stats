@@ -99,3 +99,13 @@ test('one failed phase probe does not cause another history query after recovery
 test('leaving live page sends cancellation for exactly the active backend request',()=>{
  const t=setup(), cancelled=[];t.ctx.cancelStatsLoad=async id=>cancelled.push(id);t.ctx.activeLiveRequestId='live-active';t.ctx.stopLiveAutoRefresh();t.ctx.stopLiveAutoRefresh();assert.deepEqual(cancelled,['live-active']);
 })
+
+test('selection-to-game transition resumes live view after visiting another page',async()=>{
+ const names=new Set(['checkGameflowForAutoLive','shouldAutoOpenLive'])
+ const js=ts.transpileModule(ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.has(n.name?.text)).map(n=>n.getText(ast)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+ const cancelled=[],opened=[];let queries=0
+ const ctx=vm.createContext({missingGameflowReads:0,gameflowReadInFlight:false,compactDisposed:false,loadGameflowPhase:async()=>'InProgress',observedLivePhase:'ChampSelect',livePhaseRefreshAttempts:4,activeLiveRequestId:'live-selection',liveGame:{value:{phase:'ChampSelect'}},liveLoading:{value:false},liveRefreshing:{value:true},liveError:{value:''},livePhase:{value:'ChampSelect'},autoLiveSessionActive:true,LIVE_DATA_PHASES:new Set(['ChampSelect','InProgress']),AUTO_LIVE_PHASES:new Set(['ChampSelect','InProgress']),cancelStatsLoad:async id=>cancelled.push(id),checkAutoAccept(){},navigateToPage:page=>opened.push(page),refreshLiveGame:async()=>queries++})
+ vm.runInContext(js,ctx);await ctx.checkGameflowForAutoLive()
+ assert.deepEqual(opened,['live']);assert.equal(queries,1);assert.deepEqual(cancelled,['live-selection']);assert.equal(ctx.liveGame.value,null)
+ await ctx.checkGameflowForAutoLive();assert.equal(queries,1)
+})

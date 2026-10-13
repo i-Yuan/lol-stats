@@ -227,6 +227,7 @@ const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
 const appCurrentVersion = ref("")
+const appBuildId = /^[a-f0-9]{7,40}$/i.test(import.meta.env.VITE_BUILD_SHA || "") ? import.meta.env.VITE_BUILD_SHA.slice(0, 7) : "本地开发"
 const releaseNotesDialog = ref<ReleaseNotesDialog | null>(null)
 const updateDialog = ref<AppUpdateInfo | null>(null)
 const pendingUpdateDialog = ref<AppUpdateInfo | null>(null)
@@ -1799,7 +1800,8 @@ async function checkGameflowForAutoLive() {
     // another full history batch as soon as the next probe succeeds.
     if (missingGameflowReads < 3) return
   } else { missingGameflowReads = 0 }
-  if (phase !== observedLivePhase && (!phase || !LIVE_DATA_PHASES.has(phase) || phase === "ChampSelect")) {
+  const phaseChanged = phase !== observedLivePhase
+  if (phaseChanged && (!phase || !LIVE_DATA_PHASES.has(phase) || AUTO_LIVE_PHASES.has(phase))) {
     if (activeLiveRequestId) void cancelStatsLoad(activeLiveRequestId).catch(() => {})
     activeLiveRequestId = ""
     liveGame.value = null
@@ -1821,7 +1823,7 @@ async function checkGameflowForAutoLive() {
     return
   }
 
-  if (autoLiveSessionActive) return
+  if (autoLiveSessionActive && !phaseChanged) return
   autoLiveSessionActive = true
 
   navigateToPage("live")
@@ -1930,7 +1932,7 @@ onUnmounted(() => {
           <Settings :size="18" />
           设置
         </button>
-        <span class="app-version">{{ appCurrentVersion ? `v${appCurrentVersion}` : "版本读取中" }}</span>
+        <span class="app-version">{{ appCurrentVersion ? `v${appCurrentVersion}` : "版本读取中" }}<small class="app-build">构建 {{ appBuildId }}</small></span>
       </div>
     </aside>
 
@@ -2381,6 +2383,7 @@ button:disabled {
 </style>
 
 <style scoped>
+.app-build { display: block; font-size: 10px; margin-top: 4px; color: #809189; }
 .live-refresh-hint { margin: -8px 0 18px; color: #6f8379; font-size: 12px; line-height: 1.6; }
 .compact-launch { background: #e1eee7; color: #2e6b56; border: 1px solid #c8dcd0; border-radius: 9px; padding: 9px 13px; cursor: pointer; }
 .app-shell {
