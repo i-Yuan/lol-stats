@@ -2,7 +2,11 @@
 // Vite's production build still uses the root index.html, never this fixture.
 import { createApp } from 'vue'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
-import { game, detail, assets, champions, stats } from './fixture'
+import { detail, assets, champions, stats } from './fixture'
+if(new URLSearchParams(location.search).has('normal')){
+ const names=['珠光护手','魔法飞弹','神射法师','炼狱导管','急急小子','潘多拉的盒子']
+ assets.augments.forEach((a,i)=>a.name=names[i])
+}
 mockWindows('main', 'compact')
 mockIPC((cmd, payload: any) => {
  if(cmd==='app_version')return '' // no release-notes popup in deterministic fixture
@@ -18,7 +22,10 @@ mockIPC((cmd, payload: any) => {
  if(cmd==='plugin:window|inner_size')return {width:1363,height:836}
  if(cmd==='plugin:window|scale_factor')return 1
  if(cmd==='plugin:window|get_all_windows')return ['main','compact']
- if(cmd==='copy_png_to_clipboard'){(window as any).__copiedPng=payload.bytes;return}
+ if(cmd==='copy_png_to_clipboard'){(window as any).__copiedPng=payload.bytes;
+ const root=document.querySelector('.overview-export') as HTMLElement|null
+ ;(window as any).__exportFits=root ? [...root.querySelectorAll<HTMLElement>('.team-block')].every(t=>t.scrollWidth<=t.clientWidth+1) : false
+ return}
  if(cmd.startsWith('plugin:window|'))return
  throw new Error(`Unmocked IPC: ${cmd}`)
 },{shouldMockEvents:true})

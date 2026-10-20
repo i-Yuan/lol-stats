@@ -350,10 +350,24 @@ async function copyImage() {
   const capturedId = props.matchDetail.gameId
   const generation = shareGeneration
   // Widen only the exported clone, not the live horizontally scrolling table.
-  const width = Math.max(target.clientWidth, ...Array.from(target.querySelectorAll<HTMLElement>(".team-block")).map(team => team.scrollWidth + 28))
+  const width = Math.max(target.clientWidth, ...Array.from(target.querySelectorAll<HTMLElement>(".detail-row")).map(row => row.scrollWidth + 64))
+  const exportTarget = target.cloneNode(true) as HTMLElement
+  exportTarget.classList.add("overview-export")
+  Object.assign(exportTarget.style, { width: `${width}px`, height: "auto" })
+  const exportHost = document.createElement("div")
+  Object.assign(exportHost.style, { position: "fixed", left: "-10000px", top: "0" })
+  exportHost.setAttribute("aria-hidden", "true")
+  exportHost.inert = true
+  exportHost.appendChild(exportTarget)
+  exportTarget.querySelectorAll<HTMLElement>(".team-block").forEach(team => {
+    team.style.overflow = "visible"
+    team.style.width = "auto"
+    team.style.height = "auto"
+  })
+  document.body.appendChild(exportHost)
   copying.value = true
   try {
-    await copyElementAsPng(target, {
+    await copyElementAsPng(exportTarget, {
       backgroundColor: "#f6faf9",
       pixelRatio: 2,
       width,
@@ -370,6 +384,7 @@ async function copyImage() {
       duration: 7000,
     })
   } finally {
+    exportHost.remove()
     copying.value = false
   }
 }
