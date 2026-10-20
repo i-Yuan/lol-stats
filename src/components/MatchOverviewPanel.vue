@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from "vue"
+import { computed, inject, onBeforeUnmount, onDeactivated, ref, watch } from "vue"
 import { ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
 import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
@@ -32,15 +32,16 @@ type PlayerAbilityState = {
   profile: PlayerProfile | null
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   game: RecentGame
   matchDetail: MatchDetailResponse | null
   loading: boolean
   error: string
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
+  active?: boolean
   sgpServerId?: string
-}>()
+}>(), { active: true })
 
 const emit = defineEmits<{
   openPlayer: [player: MatchDetailPlayer]
@@ -48,6 +49,10 @@ const emit = defineEmits<{
 
 const captureRef = ref<HTMLElement | null>(null)
 const copying = ref(false)
+let shareGeneration = 0
+watch(() => props.active, () => { shareGeneration++ })
+onDeactivated(() => { shareGeneration++ })
+onBeforeUnmount(() => { shareGeneration++ })
 const showPlayerAbility = ref(false)
 const abilityLoading = ref(false)
 const playerAbilityStates = ref<Record<string, PlayerAbilityState>>({})
@@ -340,15 +345,19 @@ function errorMessage(error: unknown) {
 
 async function copyImage() {
   const target = captureRef.value
-  if (!target || !props.matchDetail || copying.value) return
+  if (!target || !props.matchDetail || copying.value || !props.active) return
 
   const capturedId = props.matchDetail.gameId
+  const generation = shareGeneration
+  // Widen only the exported clone, not the live horizontally scrolling table.
+  const width = Math.max(target.clientWidth, ...Array.from(target.querySelectorAll<HTMLElement>(".team-block")).map(team => team.scrollWidth + 28))
   copying.value = true
   try {
     await copyElementAsPng(target, {
       backgroundColor: "#f6faf9",
       pixelRatio: 2,
-      shouldWrite: () => props.matchDetail?.gameId === capturedId,
+      width,
+      shouldWrite: () => props.active && shareGeneration === generation && props.matchDetail?.gameId === capturedId,
       filter: (node) => !(node instanceof HTMLElement && (node.classList.contains("overview-actions") || node.classList.contains("build-share"))),
     })
 
@@ -431,7 +440,7 @@ async function copyImage() {
             @keydown.space.prevent="emit('openPlayer', player)"
           >
             <div class="champion-cell">
-              <BuildShare :game="player" :assets="gameAssets" :champions="champions" :server="sgpServerId" :identity="player.puuid" />
+              <BuildShare :active="active" :game="player" :assets="gameAssets" :champions="champions" :server="sgpServerId" :identity="player.puuid" />
               <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="42" />
               <span
                 v-if="!showPlayerAbility"
@@ -544,6 +553,7 @@ async function copyImage() {
 .overview-panel {
   display: flex;
   min-height: 0;
+  min-width: 0;
   flex-direction: column;
   gap: 10px;
   border: 1px solid #dce7e4;
@@ -630,6 +640,7 @@ async function copyImage() {
 }
 
 .team-block {
+  min-width: 0;
   overflow-x: auto;
   border: 1px solid #dce7e4;
   border-radius: 8px;
@@ -641,12 +652,15 @@ async function copyImage() {
 .detail-row {
   display: grid;
   grid-template-columns: 160px 22px 252px 160px 59px repeat(5, 62px) 128px;
-  min-width: 1131px;
+  box-sizing: border-box;
+  min-width: 1151px;
   align-items: center;
   gap: 4px;
 }
 
 .team-header {
+  border: 1px solid transparent;
+  border-left-width: 5px;
   border-radius: 6px;
   margin-bottom: 6px;
   padding: 6px 7px;
@@ -721,15 +735,14 @@ async function copyImage() {
 }
 
 .detail-row {
-  height: 48px;
-  min-height: 48px;
-  max-height: 48px;
-  overflow: hidden;
+  min-height: 76px;
+  height: auto;
+  overflow: visible;
   border: 1px solid #dce7e4;
   border-left-width: 5px;
   border-radius: 8px;
   cursor: pointer;
-  padding: 2px 7px;
+  padding: 6px 7px;
 }
 
 .detail-row:hover {
@@ -749,14 +762,14 @@ async function copyImage() {
 }
 
 .champion-cell {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
 
-.champion-cell > .build-share { order:3; flex-basis:100%; }
+.champion-cell > .build-share { grid-column: 1 / -1; grid-row: 2; }
 
 .champion-cell span {
   min-width: 0;

@@ -1961,6 +1961,7 @@ onUnmounted(() => {
             :key="activeDrillTab.instanceKey"
             :game="activeDrillTab.game"
             :match-detail="activeDrillTab.detail"
+            :active="activePage === 'details'"
             :loading="activeDrillTab.loading"
             :error="activeDrillTab.error"
             :champions="championMap"

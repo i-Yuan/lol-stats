@@ -56,3 +56,12 @@ test('late asset refresh cannot change an already opened build preview',async()=
  assert.equal(t.state.snapshot,snap);assert.equal(snap.augmentLabels[0],'强化 1');assert.equal(snap.itemLabels[0],'装备 1')
  t.state.open();assert.equal(t.state.snapshot.augmentLabels[0],'新版强化')
 })
+
+test('leaving details hides the teleported preview and invalidates its pending copy',async()=>{
+ const t=setup();t.state.open();t.state.card={};const pending=t.state.copy()
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(t.canWrite(),true)
+ t.instance.props.active=false;await nextTick()
+ assert.equal(t.state.snapshot,null);assert.equal(t.canWrite(),false)
+ t.state.open();assert.equal(t.state.snapshot,null)
+ t.finish();await pending
+})

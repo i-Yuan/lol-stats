@@ -5,6 +5,7 @@ type CopyElementOptions = {
   backgroundColor?: string
   filter?: (node: Node) => boolean
   pixelRatio?: number
+  width?: number
   shouldWrite?: () => boolean
 }
 
@@ -18,6 +19,7 @@ export async function copyElementAsPng(
     cacheBust: true,
     pixelRatio: options.pixelRatio ?? 2,
     filter: options.filter,
+    width: options.width,
   })
 
   if (!blob) throw new Error("图片生成失败")

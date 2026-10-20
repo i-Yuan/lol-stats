@@ -106,10 +106,6 @@ function augmentName(augmentId: number) {
   return augmentAsset(augmentId)?.name || `强化 ${augmentId}`
 }
 
-function shortAugmentName(augmentId: number) {
-  return Array.from(augmentName(augmentId)).slice(0, 5).join("")
-}
-
 function augmentAsset(augmentId: number) {
   return augmentMap.value[augmentId] || perkMap.value[augmentId]
 }
@@ -548,12 +544,12 @@ async function openMatchDetail(game: RecentGame) {
 
                 <div class="rune-grid text-grid" v-if="player.augmentIds.length">
                   <span
-                    v-for="augmentId in player.augmentIds.slice(0, 4)"
+                    v-for="augmentId in player.augmentIds"
                     :key="augmentId"
                     :class="['augment-tag', augmentRarityClass(augmentId)]"
                     :title="augmentTitle(augmentId)"
                   >
-                    {{ shortAugmentName(augmentId) }}
+                    {{ augmentName(augmentId) }}
                   </span>
                 </div>
                 <div class="rune-grid" v-else>
@@ -1009,7 +1005,7 @@ async function openMatchDetail(game: RecentGame) {
   display: flex;
   width: min(1360px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
-  min-height: 500px;
+  min-height: min(500px, calc(100dvh - 36px));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(214, 229, 225, 0.95);
@@ -1031,7 +1027,7 @@ async function openMatchDetail(game: RecentGame) {
 .match-detail-toolbar-main {
   display: flex;
   min-width: 0;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
@@ -1122,9 +1118,12 @@ async function openMatchDetail(game: RecentGame) {
 }
 
 .match-detail-team-header {
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-left-width: 5px;
   display: grid;
   grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px) 128px;
-  min-width: 1226px;
+  min-width: 1246px;
   align-items: center;
   gap: 4px;
   border-radius: 6px;
@@ -1201,19 +1200,19 @@ async function openMatchDetail(game: RecentGame) {
 }
 
 .detail-record-list {
+  overflow: visible;
   gap: 4px;
 }
 
 .detail-row {
   box-sizing: border-box;
   grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px) 128px;
-  min-width: 1226px;
-  height: 48px;
+  min-width: 1246px;
+  height: auto;
   min-height: 48px;
-  max-height: 48px;
   gap: 4px;
-  overflow: hidden;
-  padding: 2px 7px;
+  overflow: visible;
+  padding: 6px 7px;
   box-shadow: none;
 }
 
@@ -1310,19 +1309,19 @@ async function openMatchDetail(game: RecentGame) {
   overflow: hidden;
 }
 
+.detail-row .text-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: auto;
+  overflow: visible;
+}
 .detail-row .text-grid .augment-tag {
-  box-sizing: border-box;
-  flex: 0 0 calc(5em + 8px);
-  width: calc(5em + 8px);
-  max-width: calc(5em + 8px);
-  height: 19px;
-  font-size: 13.5px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 3px;
-  text-align: center;
-  text-overflow: clip;
+  width: auto;
+  max-width: none;
+  height: auto;
+  min-height: 22px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  padding: 3px;
 }
 </style>
