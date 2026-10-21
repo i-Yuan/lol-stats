@@ -21,6 +21,14 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await current(page).locator('.record-row').last().scrollIntoViewIfNeeded()
   await expect(current(page).locator('.record-row').last()).toBeInViewport()
   await snapshot(page,info,'current-records-bottom')
+  const list=current(page).locator('.record-list').first()
+  if(await list.evaluate(el=>el.scrollWidth>el.clientWidth)){
+   await list.locator('.record-row').last().hover()
+   await page.mouse.wheel(1800,0)
+   await expect.poll(()=>list.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0)
+  }
+  await expect(list.locator('.score-cell').last()).toBeInViewport()
+  await snapshot(page,info,'current-records-right')
   await current(page).getByRole('button',{name:'数据统计',exact:true}).click()
   await expect(current(page).locator('.queue-picker button')).toHaveCount(4)
   await current(page).locator('.queue-picker button').filter({hasText:'海克斯大乱斗'}).click()
@@ -84,6 +92,14 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await snapshot(page,info,'search-player')
   await search.locator('.record-row').first().scrollIntoViewIfNeeded()
   await snapshot(page,info,'search-player-records')
+  const list=search.locator('.record-list').first()
+  if(await list.evaluate(el=>el.scrollWidth>el.clientWidth)){
+   await list.locator('.record-row').first().hover()
+   await page.mouse.wheel(1800,0)
+   await expect.poll(()=>list.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0)
+  }
+  await expect(list.locator('.score-cell').first()).toBeInViewport()
+  await snapshot(page,info,'search-player-records-right')
   await search.locator('.return-search').click()
   await mode(page,'empty');await search.getByPlaceholder('GameName#Tag 或 PUUID').fill('无匹配名字')
   await search.getByRole('button',{name:'搜索',exact:true}).click()

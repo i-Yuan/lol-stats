@@ -44,7 +44,18 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await page.locator('.tier-actions:visible').getByRole('button',{name:'清空',exact:true}).click()
   await page.locator('.center-dialog').filter({hasText:'确认清空'}).getByRole('button',{name:'取消',exact:true}).click()
   await expect(target.locator('.tier-champion')).toHaveCount(1)
-  await fits(page);await screenshot(page,{path:info.outputPath('tier-ranking.png'),fullPage:true})
+  await fits(page)
+  const toolbar=await page.locator('.tools-header').evaluate(header=>({
+   tabs:[...header.querySelectorAll('.tool-tabs button')].filter(el=>el.getClientRects().length).map(el=>{
+    const range=document.createRange();range.selectNodeContents(el)
+    return {height:range.getBoundingClientRect().height,fits:el.scrollWidth<=el.clientWidth}
+   }),
+   tabsBottom:header.querySelector('.tool-tabs').getBoundingClientRect().bottom,
+   actionsTop:header.querySelector('.tier-actions').getBoundingClientRect().top,
+  }))
+  expect(toolbar.tabs.every(tab=>tab.height<=20&&tab.fits)).toBe(true)
+  if(width===1040)expect(toolbar.actionsTop).toBeGreaterThanOrEqual(toolbar.tabsBottom)
+  await screenshot(page,{path:info.outputPath('tier-ranking.png'),fullPage:true})
   await page.locator('.tier-actions:visible').getByRole('button',{name:'导出',exact:true}).click()
   await expect.poll(()=>page.evaluate(()=>window.__copiedPng?.length||0)).toBeGreaterThan(100)
   await info.attach('tier-export',{body:Buffer.from(await page.evaluate(()=>window.__copiedPng)),contentType:'image/png'})

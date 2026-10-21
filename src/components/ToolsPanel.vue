@@ -707,13 +707,14 @@ async function exportRankingImage() {
 
 .tools-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr) auto;
   gap: 8px;
 }
 
 .tool-tabs {
   grid-column: 1;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .tool-tabs button,
@@ -732,6 +733,13 @@ async function exportRankingImage() {
   line-height: 1;
   padding: 9px 12px;
   cursor: pointer;
+}
+
+/* Keep labels readable instead of squeezing Chinese characters into columns. */
+.tool-tabs button,
+.tier-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .tool-tabs button.active,
@@ -1084,6 +1092,29 @@ async function exportRankingImage() {
   border-color: #b93b3b;
   color: #fff8f8;
   background: #b93b3b;
+}
+
+@media (max-width: 1200px) {
+  .tools-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tool-tabs {
+    grid-column: 1 / -1;
+  }
+
+  .ranking-switch {
+    grid-column: 1;
+    justify-content: flex-start;
+  }
+
+  .tier-actions {
+    grid-column: 2;
+  }
+
+  .external-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 920px) {
