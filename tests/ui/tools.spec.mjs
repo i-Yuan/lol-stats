@@ -3,6 +3,11 @@ test.beforeEach(async ({page})=>{
  page.__errors=[];page.on('pageerror',error=>page.__errors.push(error.message))
 })
 test.afterEach(async ({page})=>{expect(page.__errors).toEqual([])})
+async function screenshot(page,options){
+ for(const toast of await page.locator('.toast-card.success').all())if(await toast.isVisible())await toast.click()
+ await expect(page.locator('.toast-card.success')).toHaveCount(0)
+ await page.screenshot(options)
+}
 async function prepare(page, query='') {
  // Only validate the host integration. Do not contact or assert third-party content.
  await page.route('https://aramkit.com/**', route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<html lang="zh"><head><meta charset="utf-8"></head><body style="font:20px sans-serif;padding:24px">ARAMKit 外部页面模拟占位</body></html>'}))
@@ -22,7 +27,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
  test(`tools subpages and local drafts ${width}`,async({page},info)=>{
   await page.setViewportSize({width,height});await prepare(page);await openTools(page)
   await expect(page.frameLocator('iframe[title="ARAMKit 第三方页面"]').getByText('ARAMKit 外部页面模拟占位')).toBeVisible()
-  await page.screenshot({path:info.outputPath('aramkit-host.png'),fullPage:true})
+  await screenshot(page,{path:info.outputPath('aramkit-host.png'),fullPage:true})
   await tab(page,'由夯到拉')
   const source=page.locator('.pool-champion').first(), target=page.locator('[data-tier-id="hang"][data-drop-target]')
   const a=await source.boundingBox(), b=await target.boundingBox()
@@ -39,7 +44,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await page.locator('.tier-actions:visible').getByRole('button',{name:'清空',exact:true}).click()
   await page.locator('.center-dialog').filter({hasText:'确认清空'}).getByRole('button',{name:'取消',exact:true}).click()
   await expect(target.locator('.tier-champion')).toHaveCount(1)
-  await fits(page);await page.screenshot({path:info.outputPath('tier-ranking.png'),fullPage:true})
+  await fits(page);await screenshot(page,{path:info.outputPath('tier-ranking.png'),fullPage:true})
   await page.locator('.tier-actions:visible').getByRole('button',{name:'导出',exact:true}).click()
   await expect.poll(()=>page.evaluate(()=>window.__copiedPng?.length||0)).toBeGreaterThan(100)
   await info.attach('tier-export',{body:Buffer.from(await page.evaluate(()=>window.__copiedPng)),contentType:'image/png'})
@@ -52,7 +57,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await page.locator('.hextech-save-dialog input').fill('回归方案')
   await page.locator('.hextech-save-dialog').getByRole('button',{name:'保存',exact:true}).click()
   await expect(page.locator('.saved-design-switch select')).toHaveValue('回归方案')
-  await fits(page);await page.screenshot({path:info.outputPath('hextech-design.png'),fullPage:true})
+  await fits(page);await screenshot(page,{path:info.outputPath('hextech-design.png'),fullPage:true})
   await page.locator('.designer-actions').getByRole('button',{name:'分享',exact:true}).click()
   await expect.poll(()=>page.evaluate(()=>window.__copiedPng?.length||0)).toBeGreaterThan(100)
   await info.attach('hextech-export',{body:Buffer.from(await page.evaluate(()=>window.__copiedPng)),contentType:'image/png'})
@@ -64,7 +69,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await page.locator('.friend-row').last().getByTitle('收藏置顶').click()
   await expect(page.locator('.friend-row').first().locator('.favorite-button')).toHaveClass(/active/)
   await page.locator('.friend-columns').getByRole('button',{name:'近20局胜率'}).click()
-  await fits(page);await page.screenshot({path:info.outputPath('friends.png'),fullPage:true})
+  await fits(page);await screenshot(page,{path:info.outputPath('friends.png'),fullPage:true})
   await tab(page,'快捷工具');await expect(page.locator('.signature-input input')).toHaveValue('模拟签名')
   await page.locator('.reserved-tools').getByRole('switch').first().click()
   await expect(page.locator('.reserved-tools').getByRole('switch').first()).toHaveAttribute('aria-checked','true')
@@ -74,7 +79,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await page.locator('.signature-input input').fill('仅模拟客户端写入')
   await page.locator('.signature-row').getByRole('button',{name:'保存'}).click()
   await expect.poll(()=>page.evaluate(()=>window.__toolCalls.some(c=>c.cmd==='set_chat_status_message'&&c.payload.statusMessage==='仅模拟客户端写入'))).toBe(true)
-  await fits(page);await page.screenshot({path:info.outputPath('quick-tools.png'),fullPage:true})
+  await fits(page);await screenshot(page,{path:info.outputPath('quick-tools.png'),fullPage:true})
   for(let i=0;i<2;i++){
    await page.locator('.side-nav').getByRole('button',{name:'当前角色',exact:true}).click()
    await openTools(page);await tab(page,'海克斯设计')
@@ -115,7 +120,7 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   await modal.locator('input[type="range"]').fill('160')
   await modal.getByRole('button',{name:'保存当前大小'}).click()
   await expect(page.getByText('当前大小已保存',{exact:true})).toBeVisible()
-  await fits(page);await page.screenshot({path:info.outputPath('settings.png'),fullPage:true})
+  await fits(page);await screenshot(page,{path:info.outputPath('settings.png'),fullPage:true})
   await modal.getByRole('button',{name:'关闭',exact:true}).click()
   await page.getByRole('button',{name:'设置',exact:true}).click()
   await expect(modal.getByLabel('生成手机版截图')).toBeChecked()
@@ -133,7 +138,7 @@ for(const mode of ['empty','error','loading']){
   await prepare(page,'&tools='+mode);await openTools(page);await tab(page,'好友')
   const message={empty:'暂无好友',error:'好友读取失败',loading:'正在读取好友'}[mode]
   await expect(page.getByText(message,{exact:true})).toBeVisible()
-  await page.screenshot({path:info.outputPath('friends-'+mode+'.png'),fullPage:true})
+  await screenshot(page,{path:info.outputPath('friends-'+mode+'.png'),fullPage:true})
   if(mode==='loading')await expect(page.locator('.friend-row')).toHaveCount(2)
   await page.evaluate(()=>window.__toolsMode='loaded')
   await page.getByTitle('刷新好友和战绩').click()

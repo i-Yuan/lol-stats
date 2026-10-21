@@ -4,7 +4,7 @@ let mode=params.get('data') || 'loaded'
 const pending:Array<()=>void>=[]
 const calls:Array<{cmd:string,payload:any}>=[]
 const rich=structuredClone(stats)
-rich.recentGames=Array.from({length:12},(_,i)=>({...game,gameId:10001+i,win:i%3!==0,queueId:i%3===0?420:2400,gameMode:i%3===0?'CLASSIC':'ARAM',gameCreation:game.gameCreation-i*86400000,gameName:'测试账号'}))
+rich.recentGames=Array.from({length:12},(_,i)=>({...game,gameId:10001+i,win:i%3!==0,queueId:i%3===0?420:2400,gameMode:i%3===0?'CLASSIC':'ARAM',augmentIds:i%3===0?[]:game.augmentIds,gameCreation:game.gameCreation-i*86400000,gameName:'测试账号'}))
 rich.depthLoaded=12
 rich.summary={...rich.summary,games:12,wins:8,losses:4,winRate:2/3}
 rich.dataStatus={source:'sgp',lastSuccessAt:1792411200000,rawGames:12,excludedPve:0,excludedShort:0,excludedMissingPlayer:0,oldestGameAt:game.gameCreation-11*86400000,newestGameAt:game.gameCreation,warning:null,hasMore:false,partial:false,stale:false,sgpServerId:'TENCENT_HN1'}
