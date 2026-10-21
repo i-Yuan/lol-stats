@@ -5,7 +5,7 @@ test.beforeEach(async ({page})=>{
 test.afterEach(async ({page})=>{expect(page.__errors).toEqual([])})
 async function prepare(page, query='') {
  // Only validate the host integration. Do not contact or assert third-party content.
- await page.route('https://aramkit.com/**', route=>route.fulfill({contentType:'text/html',body:'<html lang="zh"><body style="font:20px sans-serif;padding:24px">ARAMKit 外部页面模拟占位</body></html>'}))
+ await page.route('https://aramkit.com/**', route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<html lang="zh"><head><meta charset="utf-8"></head><body style="font:20px sans-serif;padding:24px">ARAMKit 外部页面模拟占位</body></html>'}))
  await page.goto('/tests/ui/?normal=1'+query)
 }
 async function openTools(page) {
@@ -106,6 +106,9 @@ for(const [width,height] of [[1363,836],[1040,680]]){
   }
   await modal.getByLabel('单英雄战绩截图英雄数').fill('99')
   await modal.getByLabel('单英雄具体战绩截图场数').fill('0')
+  await modal.getByLabel('单英雄具体战绩截图场数').press('Tab')
+  await modal.getByLabel('生成手机版截图').uncheck()
+  await expect(modal.getByLabel('生成手机版截图')).not.toBeChecked()
   await modal.getByLabel('生成手机版截图').check()
   await expect(modal.getByLabel('单英雄战绩截图英雄数')).toHaveValue('50')
   await expect(modal.getByLabel('单英雄具体战绩截图场数')).toHaveValue('1')

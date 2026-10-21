@@ -157,6 +157,7 @@ test('notes favourite persistence and anonymous recent export',async({page},info
  await page.locator('.saved-players .open-player').click()
  await expect(page.locator('.search-page .record-row')).toHaveCount(12)
  await page.locator('.search-page .return-search').click()
+ await page.locator('.history-item').first().hover()
  await page.locator('.history-delete').first().click()
  await expect(page.locator('.history-delete')).toHaveCount(0)
 })

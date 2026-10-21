@@ -38,3 +38,9 @@ test('settings has accessible focus target and bounded scroll height', () => {
   assert.match(app, /settingsReturnFocus.focus\(\)/)
   assert.match(app, /max-height: calc\(100vh - 32px\);\s+overflow-y: auto;/)
 })
+
+test('date picker click agrees with focus-open instead of toggling it closed', () => {
+ const record = readFileSync(new URL('../src/components/RecordView.vue', import.meta.url), 'utf8')
+ assert.match(record, /class="stats-date-trigger" @click="openStatsDatePicker"/)
+ assert.doesNotMatch(record, /toggleStatsDatePicker/)
+})

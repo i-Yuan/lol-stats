@@ -221,11 +221,6 @@ function normalizeStatsDepthInput(event: Event) {
   statsDepthInput.value = input.value.replace(/\D/g, "").slice(0, 4)
 }
 
-function toggleStatsDatePicker() {
-  window.clearTimeout(statsDateCloseTimer)
-  statsDatePickerOpen.value = !statsDatePickerOpen.value
-}
-
 function openStatsDatePicker() {
   window.clearTimeout(statsDateCloseTimer)
   statsDatePickerOpen.value = true
@@ -545,7 +540,7 @@ function round2(value: number) {
               @focusin="openStatsDatePicker"
               @focusout="scheduleStatsDatePickerClose"
             >
-              <button type="button" class="stats-date-trigger" @click="toggleStatsDatePicker">
+              <button type="button" class="stats-date-trigger" @click="openStatsDatePicker" :aria-expanded="statsDatePickerOpen">
                 <span>日期</span>
                 <strong>{{ statsDateLabel }}</strong>
               </button>
