@@ -13,7 +13,7 @@ concurrency:
 jobs:
   browser:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -25,6 +25,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: npx vue-tsc --noEmit -p tests/ui/tsconfig.json
       - run: npx playwright install chromium
       - run: npm run test:ui
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

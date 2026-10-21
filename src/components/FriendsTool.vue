@@ -118,9 +118,17 @@ watch(
   (active) => {
     if (active) {
       if (!initialized.value) void refreshFriends()
+      else if (!listLoading.value) void hydrateFriendStats(++statsRunId)
       startFriendStatusPolling()
     } else {
       stopFriendStatusPolling()
+      // Native requests without request IDs cannot be cancelled. Invalidate their
+      // results and stop starting queued work until this page is active again.
+      statsRunId += 1
+      statsRefreshActive.value = false
+      for (const friend of friends.value) {
+        if (friend.statsState === "loading") friend.statsState = "idle"
+      }
     }
   },
   { immediate: true },
@@ -223,7 +231,7 @@ async function refreshFriends() {
   if (listLoading.value) return
   listLoading.value = true
   listError.value = ""
-  const runId = ++statsRunId
+  statsRunId += 1
 
   try {
     const entries = await loadFriends(true)
@@ -234,8 +242,10 @@ async function refreshFriends() {
     persistFriendOrder()
     persistReadyFriendStats()
     initialized.value = true
-    if (props.active) startFriendStatusPolling()
-    void hydrateFriendStats(runId)
+    if (props.active) {
+      startFriendStatusPolling()
+      void hydrateFriendStats(++statsRunId)
+    }
   } catch (error) {
     listError.value = errorMessage(error)
   } finally {
@@ -328,13 +338,14 @@ async function pollFriendStatuses() {
 }
 
 async function hydrateFriendStats(runId: number) {
+  if (!props.active || runId !== statsRunId) return
   const queue = friendStatsRefreshQueue()
   let cursor = 0
   statsRefreshActive.value = true
   statsProgress.value = { completed: 0, total: queue.length }
 
   const worker = async () => {
-    while (runId === statsRunId) {
+    while (props.active && runId === statsRunId) {
       const friend = queue[cursor]
       cursor += 1
       if (!friend) return

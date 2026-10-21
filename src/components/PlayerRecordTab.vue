@@ -15,13 +15,14 @@ const RECENT_PAGE_SIZE = 20
 const MAX_RECENT_DEPTH = 1000
 const DEFAULT_STATS_DEPTH = 100
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
+  active?: boolean
   query: string
   sgpServerId?: string
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
   shareSettings: ShareSettings
-}>()
+}>(), { active: true })
 
 const emit = defineEmits<{
   openMatch: [payload: OpenMatchPayload]
@@ -140,6 +141,7 @@ watch(
 
 <template>
   <RecordView
+    :active="active"
     :recent-stats="recentStats"
     :full-stats="fullStats"
     :ranked-stats="rankedStats"

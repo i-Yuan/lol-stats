@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test'
+test.beforeEach(async({page})=>{page.__errors=[];page.on('pageerror',e=>page.__errors.push(e.message))})
+test.afterEach(async({page})=>{expect(page.__errors).toEqual([])})
 async function openDetail(page,query=""){
  await page.goto('/tests/ui/'+query)
  await page.getByRole('button',{name:'刷新',exact:true}).first().click()

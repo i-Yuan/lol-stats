@@ -12,6 +12,8 @@ function loadTs(file,resolve){
  const module={exports:{}};vm.runInNewContext('(function(require,module,exports){'+code+'\n})',{console})(resolve||require,module,module.exports);return module.exports
 }
 const insights=loadTs('../src/recentInsights.ts')
+const guard=loadTs('../src/shareGuard.ts')
+const shareGuard=loadTs('../src/useShareGuard.ts',id=>id==='./shareGuard'?guard:require(id))
 const source=readFileSync(new URL('../src/components/RecentGamesShare.vue',import.meta.url),'utf8')
 const script=compileScript(parse(source).descriptor,{id:'share-test'})
 const code=ts.transpileModule(script.content,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText
@@ -20,6 +22,7 @@ const renderer=createRenderer({createElement:node,createText:node,createComment:
 function setup(){
  let calls=0,finish,shouldWrite;const notices=[];const module={exports:{}}
  vm.runInNewContext('(function(require,module,exports){'+code+'\n})',{console})(id=>{
+  if(id==='../useShareGuard')return shareGuard
   if(id==='../assetLoader')return {loadAssetDataUrl:async()=>''}
   if(id==='../recentInsights')return insights
   if(id==='./GameRecordList.vue')return {default:{render:()=>null}}
@@ -71,4 +74,14 @@ test('list sharing freezes current filtered games and keeps visual equipment fie
  const t=setup();t.instance.props.visibleGames=[{...t.stats.recentGames[0],itemIds:[1001],augmentIds:[1,2,3,4,5,6]}]
  t.state.open();assert.equal(t.state.listGames.length,1);assert.equal(t.state.listGames[0].itemIds[0],1001);assert.equal(t.state.listGames[0].augmentIds.length,6)
  t.instance.props.visibleGames=[];assert.equal(t.state.listGames.length,1)
+})
+
+test('leaving the page closes preview and a return cannot revive its pending export',async()=>{
+ const t=setup();t.state.open();t.state.card={};const pending=t.state.copy()
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(t.canWrite(),true)
+ t.instance.props.active=false
+ assert.equal(t.canWrite(),false);assert.equal(t.state.opened,false);assert.equal(t.state.snapshot,null)
+ t.instance.props.active=true
+ await nextTick();assert.equal(t.canWrite(),false)
+ t.finish();await pending
 })

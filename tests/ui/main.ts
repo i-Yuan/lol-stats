@@ -3,18 +3,30 @@
 import { createApp } from 'vue'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { detail, assets, champions, stats } from './fixture'
-if(new URLSearchParams(location.search).has('normal')){
+import { appResponse, ranked } from './app-fixture'
+import { handleLiveIPC, installLiveControls, isCompactFixture } from './live-fixture'
+import { toolsIPC } from './tools-fixture'
+if(new URLSearchParams(location.search).has('normal') || new URLSearchParams(location.search).has('app')){
  const names=['珠光护手','魔法飞弹','神射法师','炼狱导管','急急小子','潘多拉的盒子']
  assets.augments.forEach((a,i)=>a.name=names[i])
 }
-mockWindows('main', 'compact')
+if(isCompactFixture)mockWindows('compact','main');else mockWindows('main','compact')
+installLiveControls()
+let notes:any[]=[]
 mockIPC((cmd, payload: any) => {
+ if(cmd==='cancel_stats_load'){void appResponse(cmd,payload).catch(()=>{});return handleLiveIPC(cmd,payload).value}
+ const live=handleLiveIPC(cmd,payload);if(live.handled)return live.value
+ const tool=toolsIPC(cmd,payload);if(tool.handled)return tool.value
+ if(cmd==='list_player_notes')return notes
+ if(cmd==='save_player_note'){notes=[payload.entry,...notes.filter(n=>n.puuid!==payload.entry.puuid)];return payload.entry}
+ if(cmd==='delete_player_note'){notes=notes.filter(n=>n.puuid!==payload.puuid);return}
  if(cmd==='app_version')return '' // no release-notes popup in deterministic fixture
  if(cmd==='connection_status')return {connected:true,message:'模拟客户端',summoner:stats.summoner,client:{region:'TENCENT',rsoPlatformId:'HN1'}}
  if(cmd==='load_champions')return champions
  if(cmd==='load_game_assets')return assets
- if(cmd==='load_self_stats'||cmd==='search_player'||cmd==='search_player_with_progress')return stats
- if(cmd==='load_current_ranked_stats'||cmd==='load_ranked_stats')return {queueMap:{}}
+ if(['load_self_stats','load_self_stats_with_progress','search_player','search_player_with_progress','search_summoner_candidates'].includes(cmd))return appResponse(cmd,payload)
+ if(cmd==='cancel_stats_load')return
+ if(cmd==='load_current_ranked_stats'||cmd==='load_ranked_stats')return ranked
  if(cmd==='load_match_detail')return detail
  if(cmd==='load_gameflow_phase')return 'None'
  if(cmd==='load_lcu_assets')return Object.fromEntries(payload.paths.map((p:string)=>[p,icon]))
@@ -31,4 +43,6 @@ mockIPC((cmd, payload: any) => {
 },{shouldMockEvents:true})
 const icon='data:image/svg+xml;base64,'+btoa('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="7" fill="#36786c"/><path d="M12 34L24 10l12 24z" fill="#efd68d"/></svg>')
 const App=(await import('../../src/App.vue')).default
-createApp(App).mount('#app')
+const CompactApp=(await import('../../src/CompactApp.vue')).default
+if(isCompactFixture)document.body.classList.add('compact-body')
+createApp(isCompactFixture?CompactApp:App).mount('#app')

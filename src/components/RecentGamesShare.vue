@@ -6,8 +6,10 @@ import { riotId } from '../utils'
 import { copyElementAsPng } from '../imageShare'
 import {loadAssetDataUrl} from '../assetLoader'
 import GameRecordList from './GameRecordList.vue'
+import { useShareGuard } from '../useShareGuard'
 import { notifyKey } from '../notifications'
-const props=defineProps<{stats:PlayerStatsResponse;champions:Record<number,ChampionSummaryItem>;gameAssets:GameAssetBundle;visibleGames?:RecentGame[]}>()
+const props=withDefaults(defineProps<{active?:boolean;stats:PlayerStatsResponse;champions:Record<number,ChampionSummaryItem>;gameAssets:GameAssetBundle;visibleGames?:RecentGame[]}>(), { active: true })
+const shareGuard=useShareGuard(()=>props.active!==false,[()=>props.stats.summoner.puuid,()=>props.stats.dataStatus?.sgpServerId])
 const opened=ref(false),busy=ref(false),count=ref(5),showName=ref(false)
 const card=ref<HTMLElement|null>(null)
 const notify=inject(notifyKey,()=>0)
@@ -22,7 +24,8 @@ const wins=computed(()=>rows.value.filter(g=>g.win).length)
 const status=computed(()=>snapshot.value?.dataStatus)
 const sourceLabel=computed(()=> !status.value ? '数据状态未知' : status.value.stale ? '旧缓存，刷新未成功' : status.value.partial ? '部分返回，样本不完整' : ({sgp:'国服服务',lcu:'客户端',cache:'本地缓存','network-cache':'网络 + 缓存'} as Record<string,string>)[status.value.source]||'来源未知')
 watch([()=>props.stats.summoner.puuid,()=>props.stats.dataStatus?.sgpServerId],()=>{opened.value=false;snapshot.value=null;showName.value=false})
-function open(){if(busy.value)return;snapshot.value=JSON.parse(JSON.stringify({...props.stats,recentGames:props.visibleGames??props.stats.recentGames}));frozenAssets.value=JSON.parse(JSON.stringify(props.gameAssets));frozenChampions.value=JSON.parse(JSON.stringify(props.champions));showName.value=false;opened.value=true}
+watch(()=>props.active,active=>{if(active===false){opened.value=false;snapshot.value=null}},{flush:'sync'})
+function open(){if(busy.value||props.active===false)return;snapshot.value=JSON.parse(JSON.stringify({...props.stats,recentGames:props.visibleGames??props.stats.recentGames}));frozenAssets.value=JSON.parse(JSON.stringify(props.gameAssets));frozenChampions.value=JSON.parse(JSON.stringify(props.champions));showName.value=false;opened.value=true}
 function date(n?:number|null){return n?new Date(n).toLocaleString('zh-CN',{hour12:false}):'未知'}
 async function prepareIcons(){
  const assets=frozenAssets.value
@@ -33,9 +36,10 @@ async function prepareIcons(){
  await Promise.allSettled([...new Set(paths.filter((p):p is string=>Boolean(p)))].map(loadAssetDataUrl))
 }
 async function copy(){
-  if(busy.value||!rows.value.length)return
+  if(busy.value||!rows.value.length||props.active===false)return
+  const isCurrent=shareGuard.capture()
   busy.value=true
-  try{await prepareIcons();await nextTick();if(!card.value)throw new Error('预览已关闭');const captured=snapshot.value;await copyElementAsPng(card.value,{shouldWrite:()=>opened.value&&snapshot.value===captured});notify({kind:'success',title:'最近对局图片已复制',message:'可粘贴到聊天窗口，由你选择发送给谁'})}
+  try{await prepareIcons();await nextTick();if(!card.value)throw new Error('预览已关闭');const captured=snapshot.value;await copyElementAsPng(card.value,{shouldWrite:()=>isCurrent()&&opened.value&&snapshot.value===captured});notify({kind:'success',title:'最近对局图片已复制',message:'可粘贴到聊天窗口，由你选择发送给谁'})}
   catch(e){notify({kind:'error',title:'分享图片生成失败',message:String(e)})}
   finally{busy.value=false}
 }

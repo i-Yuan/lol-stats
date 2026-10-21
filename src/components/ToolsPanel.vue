@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { computed, inject, nextTick, onUnmounted, ref, watch } from "vue"
 import { ArrowLeft, ClipboardCopy, Eraser, ExternalLink, Save } from "lucide-vue-next"
+import { useShareGuard } from "../useShareGuard"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
 import type { ChampionSummaryItem } from "../types"
@@ -33,6 +34,7 @@ type DropTarget =
   | { kind: "pool" }
 
 const props = defineProps<{
+  active: boolean
   champions: Record<number, ChampionSummaryItem>
   liveChampionId?: number | null
 }>()
@@ -136,6 +138,17 @@ watch(
     }
   },
 )
+
+watch(() => props.active, (active) => {
+  if (!active) {
+    saveDialogOpen.value = false
+    clearDialogOpen.value = false
+    aramkitNoticeOpen.value = false
+    endDrag()
+  } else if (isAramkitActive.value && !localStorage.getItem(ARAMKIT_NOTICE_KEY)) {
+    aramkitNoticeOpen.value = true
+  }
+})
 
 onUnmounted(() => {
   cleanupPointerDrag()
@@ -442,12 +455,16 @@ function clearCurrentRanking() {
   clearDialogOpen.value = false
 }
 
+const rankingShareGuard = useShareGuard(() => props.active !== false && activeTab.value === "tier", [tiers])
+
 async function exportRankingImage() {
-  if (!captureRef.value || exporting.value) return
+  if (!captureRef.value || exporting.value || props.active === false || activeTab.value !== "tier") return
+  const shouldWrite = rankingShareGuard.capture()
   exporting.value = true
 
   try {
     await copyElementAsPng(captureRef.value, {
+      shouldWrite,
       backgroundColor: "#f6faf9",
       pixelRatio: 2,
     })
@@ -541,7 +558,7 @@ async function exportRankingImage() {
       ></iframe>
     </section>
 
-    <HextechAugmentDesigner v-show="activeTab === 'hextech'" />
+    <HextechAugmentDesigner :active="active !== false && activeTab === 'hextech'" v-show="activeTab === 'hextech'" />
 
     <section class="tier-tool" v-show="activeTab === 'tier'">
       <div class="tier-capture" ref="captureRef">
@@ -598,11 +615,11 @@ async function exportRankingImage() {
 
     <FriendsTool
       v-show="activeTab === 'friends'"
-      :active="activeTab === 'friends'"
+      :active="active && activeTab === 'friends'"
       @open-friend="emit('openFriend', $event)"
     />
 
-    <ReservedTools v-show="activeTab === 'reserved'" :active="activeTab === 'reserved'" />
+    <ReservedTools v-show="activeTab === 'reserved'" :active="active && activeTab === 'reserved'" />
 
     <div class="center-overlay" v-if="aramkitNoticeOpen" @click.self="closeAramKitNotice">
       <section class="center-dialog aramkit-notice-dialog">

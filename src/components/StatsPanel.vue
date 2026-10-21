@@ -14,6 +14,7 @@ import {
   type FunGoldRange,
   type FunStatsResult,
 } from "../funStats"
+import { useShareGuard } from "../useShareGuard"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
 import type {
@@ -38,7 +39,8 @@ import { championName, fixed, mitigationValue, percent, teamMitigationValue } fr
 
 const DATA_FILTER_HINT_SEEN_KEY = "lol-stats.data-filter-hint-seen"
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
+  active?: boolean
   stats: PlayerStatsResponse | null
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
@@ -46,7 +48,7 @@ const props = defineProps<{
   sgpServerId?: string
   ownerLabel?: string
   ownerPuuid?: string
-}>()
+}>(), { active: true })
 
 const emit = defineEmits<{
   openMatch: [payload: OpenMatchPayload]
@@ -63,6 +65,7 @@ const funStatsResult = ref<FunStatsResult | null>(null)
 const funStatsVisible = ref(false)
 const funStatsLoading = ref(false)
 const dataFilterHintVisible = ref(localStorage.getItem(DATA_FILTER_HINT_SEEN_KEY) !== "1")
+const shareGuard = useShareGuard(() => props.active !== false, [() => props.stats, selectedChampionId, championSearch, () => props.shareSettings])
 const notify = inject(notifyKey, () => 0)
 let savedTableScrollTop = 0
 let savedPageScrollTop = 0
@@ -513,13 +516,14 @@ function isGameLeader(
 }
 
 async function copyChampionStatsImage() {
-  if (!props.stats || shareBusy.value) return
+  if (!props.stats || shareBusy.value || props.active === false) return
+  const shouldWrite = shareGuard.capture()
   shareBusy.value = "champions"
   try {
     await waitForCaptureRender()
     const target = championStatsCaptureRef.value
     if (!target) throw new Error("截图区域未就绪")
-    await copyElementAsPng(target)
+    await copyElementAsPng(target, { shouldWrite })
     notify({
       kind: "success",
       title: "单英雄战绩图片已复制",
@@ -538,13 +542,14 @@ async function copyChampionStatsImage() {
 }
 
 async function copyChampionGamesImage() {
-  if (!selectedChampionId.value || shareBusy.value) return
+  if (!selectedChampionId.value || shareBusy.value || props.active === false) return
+  const shouldWrite = shareGuard.capture()
   shareBusy.value = "games"
   try {
     await waitForCaptureRender()
     const target = championGamesCaptureRef.value
     if (!target) throw new Error("截图区域未就绪")
-    await copyElementAsPng(target)
+    await copyElementAsPng(target, { shouldWrite })
     notify({
       kind: "success",
       title: "单英雄具体战绩图片已复制",

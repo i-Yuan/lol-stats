@@ -12,8 +12,11 @@ import augmentManifest from "../assets/hextech/augments.zh-CN.json"
 import goldBorder from "../assets/hextech/borders/Gold.png"
 import prismaticBorder from "../assets/hextech/borders/Prismatic.png"
 import silverBorder from "../assets/hextech/borders/Silver.png"
+import { useShareGuard } from "../useShareGuard"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
+
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
 
 type HextechRarity = "silver" | "gold" | "prismatic"
 
@@ -235,13 +238,18 @@ function confirmDelete() {
   notify({ kind: "success", title: "海克斯方案已删除", message: name })
 }
 
+const shareGuard = useShareGuard(() => props.active !== false, [draft])
+watch(() => props.active, active => { if (active === false) { saveDialogOpen.value = false; deleteDialogOpen.value = false } })
+
 async function shareDesign() {
-  if (!captureRef.value || sharing.value) return
+  if (!captureRef.value || sharing.value || props.active === false) return
+  const shouldWrite = shareGuard.capture()
   sharing.value = true
 
   try {
     await nextTick()
     await copyElementAsPng(captureRef.value, {
+      shouldWrite,
       backgroundColor: "transparent",
       pixelRatio: 3,
     })

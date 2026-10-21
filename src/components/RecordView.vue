@@ -28,7 +28,8 @@ type QueueOption = {
   matches: (game: RecentGame) => boolean
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
+  active?: boolean
   recentStats: PlayerStatsResponse | null
   fullStats: PlayerStatsResponse | null
   rankedStats?: RankedStatsResponse | null
@@ -42,7 +43,7 @@ const props = defineProps<{
   statsDepth: number
   error: string
   sgpServerId?: string
-}>()
+}>(), { active: true })
 
 const emit = defineEmits<{
   loadRecent: []
@@ -501,6 +502,7 @@ function round2(value: number) {
     <details class="record-secondary" v-if="activeTab === 'recent' && recentStats"><summary>近期趋势 · 最近 20 场与此前 20 场</summary><RecentTrend :stats="recentStats" :champions="champions" @load-more="emit('loadRecentMore')" /></details>
 
     <MatchHistoryPanel
+      :active="active !== false && activeTab === 'recent'"
       v-if="activeTab === 'recent'"
       :stats="recentStats"
       :champions="champions"
@@ -595,6 +597,7 @@ function round2(value: number) {
         </div>
 
         <StatsPanel
+          :active="active !== false && activeTab === 'stats'"
           :stats="filteredStats"
           :champions="champions"
           :game-assets="gameAssets"

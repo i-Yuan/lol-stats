@@ -223,6 +223,37 @@ const gameAssets = ref<GameAssetBundle>(emptyGameAssets())
 const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
+const settingsModalRef = ref<HTMLElement | null>(null)
+let settingsReturnFocus: HTMLElement | null = null
+watch(settingsOpen, async (opened) => {
+  if (opened) {
+    settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    await nextTick()
+    if (settingsOpen.value) settingsModalRef.value?.focus()
+  } else if (settingsReturnFocus?.isConnected) {
+    settingsReturnFocus.focus()
+    settingsReturnFocus = null
+  }
+})
+function handleSettingsKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault()
+    settingsOpen.value = false
+    return
+  }
+  if (event.key !== "Tab" || !settingsModalRef.value) return
+  const controls = Array.from(settingsModalRef.value.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+  )).filter((element) => element.getClientRects().length > 0)
+  const first = controls[0], last = controls[controls.length - 1]
+  if (!first) { event.preventDefault(); return }
+  const focused = document.activeElement
+  if (event.shiftKey && (focused === first || focused === settingsModalRef.value)) {
+    event.preventDefault(); last?.focus()
+  } else if (!event.shiftKey && (focused === last || focused === settingsModalRef.value)) {
+    event.preventDefault(); first.focus()
+  }
+}
 const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
@@ -1971,6 +2002,7 @@ onUnmounted(() => {
           />
 
           <PlayerRecordTab
+            :active="activePage === 'details'"
             v-else-if="activeDrillTab.type === 'player'"
             :key="activeDrillTab.instanceKey"
             :query="activeDrillTab.query"
@@ -1984,6 +2016,7 @@ onUnmounted(() => {
       </section>
 
       <RecordView
+        :active="activePage === 'current'"
         v-show="activePage === 'current'"
         :recent-stats="currentRecentStats"
         :full-stats="currentFullStats"
@@ -2036,6 +2069,7 @@ onUnmounted(() => {
 
       <section class="tools-page" v-show="activePage === 'tools'">
         <ToolsPanel
+          :active="activePage === 'tools'"
           :champions="championMap"
           :live-champion-id="liveAramkitChampionId"
           @open-friend="openFriendDrillTab"
@@ -2121,6 +2155,7 @@ onUnmounted(() => {
         </section>
 
         <RecordView
+          :active="activePage === 'search'"
           v-else
           :key="activeSearchServerId + ':' + activeSearchQuery + ':' + searchEpoch"
           :recent-stats="searchRecentStats"
@@ -2187,7 +2222,7 @@ onUnmounted(() => {
     </div>
 
     <div class="settings-overlay" v-if="settingsOpen" @click.self="settingsOpen = false">
-      <section class="settings-modal">
+      <section class="settings-modal" ref="settingsModalRef" role="dialog" aria-modal="true" aria-label="软件设置" tabindex="-1" @keydown="handleSettingsKeydown">
         <header>
           <div>
             <span>软件设置</span>
@@ -2924,7 +2959,9 @@ button:disabled {
 
 .settings-modal {
   display: flex;
-  width: 460px;
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   flex-direction: column;
   gap: 14px;
   border: 1px solid #d6e5e1;

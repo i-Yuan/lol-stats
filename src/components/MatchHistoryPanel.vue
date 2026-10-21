@@ -11,7 +11,8 @@ import { fixed } from "../utils"
 import RecentGamesShare from "./RecentGamesShare.vue"
 import GameRecordList from "./GameRecordList.vue"
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
+  active?: boolean
   stats: PlayerStatsResponse | null
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
@@ -20,7 +21,7 @@ const props = defineProps<{
   hasMore?: boolean
   ownerLabel?: string
   ownerPuuid?: string
-}>()
+}>(), { active: true })
 
 const emit = defineEmits<{
   loadMore: []
@@ -111,7 +112,7 @@ watch(
     </div>
 
     <div class="history-actions">
-    <RecentGamesShare :stats="stats" :champions="champions" :game-assets="gameAssets" :visible-games="filteredGames" />
+    <RecentGamesShare :active="active" :stats="stats" :champions="champions" :game-assets="gameAssets" :visible-games="filteredGames" />
 
     <label v-if="augmentOptions.length">海克斯强化筛选
       <select v-model.number="augmentFilter"><option :value="0">全部已加载对局</option><option v-for="a in augmentOptions" :key="a.id" :value="a.id">{{a.name}}</option></select>
